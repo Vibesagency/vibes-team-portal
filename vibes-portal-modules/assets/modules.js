@@ -611,7 +611,7 @@ async function renderCRM() {
     const timer = setInterval(() => {
       if (routeKey() !== target || !moduleRoutes.has(routeKey()) || attempts++ > 40) { clearInterval(timer); return; }
       const view = root(); const child = view && view.firstElementChild;
-      const routeOwned = routeKey(); const owned = child && (child.classList.contains('vpm-message') || (routeOwned === 'crm' && child.querySelector('#vpm-lead-discovery')) || (routeOwned === 'analytics' && child.querySelector('.vpm-stats')) || (routeOwned === 'finance' && child.querySelector('#vpm-payment-form')) || (routeOwned === 'payslips' && child.querySelector('#vpm-payslip-form')) || (routeOwned === 'connect' && child.classList.contains('vpm-connect-page')));
+      const routeOwned = routeKey(); const owned = child && (child.classList.contains('vpm-message') || (routeOwned === 'crm' && (child.classList.contains('vpc') || child.querySelector('#vpm-lead-discovery'))) || (routeOwned === 'analytics' && child.querySelector('.vpm-stats')) || (routeOwned === 'finance' && child.querySelector('#vpm-payment-form')) || (routeOwned === 'payslips' && child.querySelector('#vpm-payslip-form')) || (routeOwned === 'connect' && child.classList.contains('vpm-connect-page')));
       // Keep watching while this module route is active. The core portal can
       // finish a delayed route render several seconds later; if it replaces
       // our view with Dashboard, reclaim the route without changing the URL.

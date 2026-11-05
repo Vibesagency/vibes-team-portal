@@ -78,6 +78,21 @@ final class VPM_REST {
             else { $value = sanitize_text_field($value); }
             $out[$field] = mb_substr($value, 0, 6000);
         }
+        // Any other fields the research agent adds later are kept as "extra" details.
+        $reserved = array_merge($allowed, ['kind','slug','status','added','id','updatedAt','notes','extra','priority','sector']);
+        $extra = is_array($item['extra'] ?? null) ? $item['extra'] : [];
+        foreach ($item as $key => $value) { if (!in_array($key, $reserved, true)) $extra[$key] = $value; }
+        $clean = [];
+        foreach ($extra as $key => $value) {
+            $key = mb_substr(preg_replace('/[^\p{L}\p{N} _\-]/u', '', (string) $key), 0, 40);
+            if ($key === '' || in_array($key, $reserved, true) || count($clean) >= 25) continue;
+            if (is_array($value)) $value = implode(', ', array_filter(array_map(static fn($v) => is_scalar($v) ? (string) $v : '', $value), 'strlen'));
+            if (is_bool($value)) $value = $value ? 'Yes' : 'No';
+            if (!is_scalar($value) || (string) $value === '') continue;
+            $clean[$key] = mb_substr(sanitize_textarea_field((string) $value), 0, 2000);
+        }
+        if ($clean) $out['extra'] = $clean;
+        foreach (['priority','sector'] as $field) if (isset($item[$field]) && is_scalar($item[$field]) && !in_array($field, $allowed, true)) $out[$field] = mb_substr(sanitize_text_field((string) $item[$field]), 0, 60);
         return $out;
     }
 
@@ -127,7 +142,11 @@ final class VPM_REST {
         return array_merge(self::default_search_settings(), is_array($saved) ? $saved : []);
     }
 
-    public static function prospects_settings_get() { self::no_cache(); return rest_ensure_response(self::search_settings()); }
+    public static function prospects_settings_get() {
+        self::no_cache();
+        $last = get_option('vpm_agent_last_sync', []);
+        return rest_ensure_response(array_merge(self::search_settings(), ['lastSync' => is_array($last) && !empty($last['at']) ? $last : null]));
+    }
 
     public static function prospects_settings_save(WP_REST_Request $request) {
         $body = self::body($request); $current = self::search_settings();
@@ -153,7 +172,7 @@ final class VPM_REST {
         $existing = ['prospect' => [], 'request' => []]; $needs = [];
         foreach ($rows as $row) {
             $data = self::json_array($row['data']);
-            $existing[$row['kind']][] = ['slug' => $row['slug'], 'name' => $data['name'] ?? ($data['title'] ?? '')];
+            $existing[$row['kind']][] = ['slug' => $row['slug'], 'name' => $data['name'] ?? ($data['title'] ?? ''), 'status' => $row['status']];
             if ($row['kind'] === 'prospect' && (preg_match('/^(Contacts pending|No public email)/', (string) ($data['contactNote'] ?? '')) || empty($data['emailBody']))) {
                 $needs[] = ['slug' => $row['slug'], 'name' => $data['name'] ?? '', 'website' => $data['website'] ?? '', 'missingEmailDraft' => empty($data['emailBody'])];
             }
@@ -174,12 +193,22 @@ final class VPM_REST {
             if ($slug === '') { $result['skipped'][] = 'missing slug'; continue; }
             $row = $wpdb->get_row($wpdb->prepare("SELECT * FROM {$table} WHERE kind=%s AND slug=%s", $kind, $slug), ARRAY_A);
             if ($row) {
-                // Existing lead: only fill in contacts and email drafts; never touch its status.
+                // Existing lead: mirror any newer non-empty details from the research agent.
+                // Notes stay portal-only. Status only moves forward from "New" (a status set in the portal always wins).
                 $data = self::json_array($row['data']);
-                $patch = array_intersect_key(self::clean_fields($item, $kind), array_flip(self::ENRICH_FIELDS));
-                $patch = array_filter($patch, static fn($v) => $v !== '');
-                if (!$patch) { $result['skipped'][] = $slug . ': already exists'; continue; }
-                $wpdb->update($table, ['data' => wp_json_encode(array_merge($data, $patch)), 'updated_at' => $now], ['id' => (int) $row['id']]);
+                $patch = array_filter(self::clean_fields($item, $kind), static fn($v) => $v !== '' && $v !== []);
+                if (isset($patch['extra'])) $patch['extra'] = array_merge(is_array($data['extra'] ?? null) ? $data['extra'] : [], $patch['extra']);
+                $merged = array_merge($data, $patch);
+                $update = [];
+                if (wp_json_encode($merged) !== wp_json_encode($data)) $update['data'] = wp_json_encode($merged);
+                $status_list = $kind === 'request' ? self::REQUEST_STATUSES : self::PROSPECT_STATUSES;
+                $incoming = (string) ($item['status'] ?? '');
+                if ($row['status'] === 'New' && $incoming !== 'New' && in_array($incoming, $status_list, true)) $update['status'] = $incoming;
+                if (in_array($patch['priority'] ?? '', ['High','Medium','Low'], true) && $patch['priority'] !== $row['priority']) $update['priority'] = $patch['priority'];
+                if (!empty($patch['sector']) && $patch['sector'] !== $row['sector']) $update['sector'] = mb_substr((string) $patch['sector'], 0, 60);
+                if (!$update) { $result['unchanged'] = ($result['unchanged'] ?? 0) + 1; continue; }
+                $update['updated_at'] = $now;
+                $wpdb->update($table, $update, ['id' => (int) $row['id']]);
                 $result['updated']++;
                 continue;
             }
@@ -198,6 +227,16 @@ final class VPM_REST {
             if ($wpdb->insert_id) { $result['created']++; } else { $result['skipped'][] = $slug . ': could not save'; }
         }
         VPM_Permissions::audit('crm', 'agent_leads_received', 'prospect', 0, ['created' => $result['created'], 'updated' => $result['updated']]);
+        if (self::agent_auth($request)) {
+            $last = get_option('vpm_agent_last_sync', []);
+            $today = wp_date('Y-m-d');
+            $same_day = is_array($last) && ($last['day'] ?? '') === $today;
+            update_option('vpm_agent_last_sync', [
+                'at' => current_time('mysql'), 'day' => $today,
+                'created' => ($same_day ? (int) ($last['created'] ?? 0) : 0) + $result['created'],
+                'updated' => ($same_day ? (int) ($last['updated'] ?? 0) : 0) + $result['updated'],
+            ], false);
+        }
         return rest_ensure_response($result);
     }
 

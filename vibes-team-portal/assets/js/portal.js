@@ -540,7 +540,7 @@
     quotations: async () => {
       if (!state.boot.capabilities.manageSales) return routes.dashboard();
       const rows = await load('quotations', true);
-      view.innerHTML = `<section class="vtp-page">${pageHead('Quotations', 'Send secure proposals, collect client approval and activate approved work.', '<button class="vtp-btn" data-preview-template>Preview design</button><button class="vtp-btn primary" data-open="quotation">＋ New quotation</button>')}<div class="vtp-grid three">${rows.length ? rows.map(quote => `<article class="vtp-card vtp-quote-card" data-quote-id="${quote.id}" data-drive-folder-url="${esc(quote.drive_folder_url || '')}"><div class="vtp-card-head"><div><strong>${esc(quote.quote_number)}</strong>${Number(quote.period_index || 0) ? `<small class="vtp-cell-sub">Monthly draft ${Number(quote.period_index)} of ${Number(quote.contract_months || 0)}</small>` : Number(quote.contract_months || 0) > 1 ? `<small class="vtp-cell-sub">${Number(quote.contract_months)}-month master quotation · monthly drafts created</small>` : ''}</div>${chip(quote.status, quote.status === 'approved' ? 'green' : quote.status === 'changes_requested' ? 'coral' : quote.status === 'sent' ? 'amber' : '')}</div><h3>${esc(quote.company || quote.client_name)}</h3><p>${esc(quote.client_name)} · ${esc(quote.email)}</p><div class="vtp-quote-total">${money(quote.total, quote.currency)}</div><small>Valid until ${fmt(quote.valid_until)}</small>${quote.drive_file_url || quote.drive_folder_url ? `<div class="vtp-quote-drive-links"><small>Drive source of truth</small><div>${quote.drive_file_url ? `<a class="vtp-btn small" href="${esc(quote.drive_file_url)}" target="_blank" rel="noopener noreferrer">Open PDF in Drive ↗</a>` : ''}${quote.drive_folder_url ? `<a class="vtp-btn small" href="${esc(quote.drive_folder_url)}" target="_blank" rel="noopener noreferrer">Open quotation folder ↗</a>` : ''}</div><small data-mapped-path-status></small></div>` : ''}<div class="vtp-card-actions"><button class="vtp-btn small" data-preview-quote="${quote.id}">Preview</button>${quote.status !== 'approved' ? `<button class="vtp-btn small primary" data-send-quote="${quote.id}">${quote.status === 'sent' ? 'Resend' : 'Send to client'}</button><button class="vtp-btn small" data-quote-status="${quote.id}" data-status="approved">Approve manually</button>` : ''}${quote.approval_token && quote.status !== 'draft' ? `<button class="vtp-btn small" data-copy-review="${quote.id}">Copy review link</button>` : ''}${!Number(quote.parent_quotation_id || 0) ? `<button class="vtp-btn small primary" data-quote-project="${quote.id}">Create project</button>` : ''} <button class="vtp-btn small danger" data-delete-quotation="${quote.id}">Delete</button></div>${quote.client_message ? `<div class="vtp-quote-response"><strong>Client response</strong><p>${esc(quote.client_message)}</p></div>` : ''}</article>`).join('') : empty('No quotations yet.')}</div></section>`;
+      view.innerHTML = `<section class="vtp-page">${pageHead('Quotations', 'Send secure proposals, collect client approval and activate approved work.', '<button class="vtp-btn" data-preview-template>Preview design</button><button class="vtp-btn primary" data-open="quotation">＋ New quotation</button>')}<div class="vtp-grid three">${rows.length ? rows.map(quote => `<article class="vtp-card vtp-quote-card" data-quote-id="${quote.id}" data-drive-folder-url="${esc(quote.drive_folder_url || '')}"><div class="vtp-card-head"><div><strong>${esc(quote.quote_number)}</strong>${Number(quote.period_index || 0) ? `<small class="vtp-cell-sub">Monthly draft ${Number(quote.period_index)} of ${Number(quote.contract_months || 0)}</small>` : Number(quote.contract_months || 0) > 1 ? `<small class="vtp-cell-sub">${Number(quote.contract_months)}-month master quotation · monthly drafts created</small>` : ''}</div>${chip(quote.status, quote.status === 'approved' ? 'green' : quote.status === 'changes_requested' ? 'coral' : quote.status === 'sent' ? 'amber' : '')}</div><h3>${esc(quote.company || quote.client_name)}</h3><p>${esc(quote.client_name)} · ${esc(quote.email)}</p><div class="vtp-quote-total">${money(quote.total, quote.currency)}</div><small>Valid until ${fmt(quote.valid_until)}</small>${quote.drive_file_url || quote.drive_folder_url ? `<div class="vtp-quote-drive-links"><small>Drive source of truth</small><div>${quote.drive_file_url ? `<a class="vtp-btn small" href="${esc(quote.drive_file_url)}" target="_blank" rel="noopener noreferrer">Open PDF in Drive ↗</a>` : ''}${quote.drive_folder_url ? `<a class="vtp-btn small" href="${esc(quote.drive_folder_url)}" target="_blank" rel="noopener noreferrer">Open quotation folder ↗</a>` : ''}</div><small data-mapped-path-status data-folder="${esc(quote.drive_folder_url || '')}"></small></div>` : ''}<div class="vtp-card-actions"><button class="vtp-btn small" data-preview-quote="${quote.id}">Preview</button>${quote.status !== 'approved' ? `<button class="vtp-btn small primary" data-send-quote="${quote.id}">${quote.status === 'sent' ? 'Resend' : 'Send to client'}</button><button class="vtp-btn small" data-quote-status="${quote.id}" data-status="approved">Approve manually</button>` : ''}${quote.approval_token && quote.status !== 'draft' ? `<button class="vtp-btn small" data-copy-review="${quote.id}">Copy review link</button>` : ''}${!Number(quote.parent_quotation_id || 0) ? `<button class="vtp-btn small primary" data-quote-project="${quote.id}">Create project</button>` : ''} <button class="vtp-btn small danger" data-delete-quotation="${quote.id}">Delete</button></div>${quote.client_message ? `<div class="vtp-quote-response"><strong>Client response</strong><p>${esc(quote.client_message)}</p></div>` : ''}</article>`).join('') : empty('No quotations yet.')}</div></section>`;
     },
 
     invoices: async () => {
@@ -918,7 +918,7 @@
     const months = structure.months || [];
     const defaultMonth = project.client_review_month || months.find(item => item.key)?.key || '';
     const internalDriveUrl = project.drive_internal_url || driveTaskFolder;
-    const mappedDriveQuickLink = `<section class="vtp-project-drive-link"><div><small>MAPPED PROJECT FOLDER</small><strong>Vibes Active Projects</strong><p>Use this Drive link on any device. The PC-mapped path appears below after the folder is resolved.</p></div><a class="vtp-btn small" href="${esc(internalDriveUrl)}" target="_blank" rel="noopener noreferrer">Open mapped Drive folder ↗</a></section>`;
+    const mappedDriveQuickLink = `<section class="vtp-project-drive-link"><div><small>MAPPED PROJECT FOLDER</small><strong>Vibes Active Projects</strong><p>Clients and employees use the Drive link. On your PC, the same folder is in your mirrored Google Drive:</p><small data-mapped-path-status data-folder="${esc(internalDriveUrl)}"></small></div><a class="vtp-btn small" href="${esc(internalDriveUrl)}" target="_blank" rel="noopener noreferrer">Open mapped Drive folder ↗</a></section>`;
     openDrawer(`<h2>${publish ? 'Send delivery for client review' : 'Manage project'}</h2><p>${esc(project.name)} · ${esc(project.client || 'Internal client')}</p>${mappedDriveQuickLink}<form id="vtp-project-review-form" class="vtp-form"><input type="hidden" name="projectId" value="${project.id}"><input type="hidden" name="publish" value="${publish ? '1' : '0'}"><div class="vtp-field"><label>Internal Vibes Drive folder</label><input name="internalDriveUrl" type="url" value="${esc(internalDriveUrl)}" placeholder="Paste the internal project folder link"></div><div class="vtp-field"><label>Private client Drive folder</label><input name="clientDriveUrl" type="url" value="${esc(project.drive_client_url || '')}" placeholder="Paste the folder shared only with the client and admin"></div>${months.length ? `<div class="vtp-field"><label>Delivery cycle to send</label><select name="month">${months.map(item => `<option value="${esc(item.key)}" ${item.key === defaultMonth ? 'selected' : ''}>${esc(item.label)}</option>`).join('')}</select><small>Only completed tasks in the selected cycle will be sent for review.</small></div>` : '<input type="hidden" name="month" value="">'}<div class="vtp-alert">The client receives a secure review page where they can open delivered files, comment, request changes, approve the work, or ask for a meeting or direct call.</div><button class="vtp-btn primary">${publish ? 'Send client review link' : 'Save project links'}</button></form>${project.status === 'finished' ? `<p class="vtp-alert">This project is archived as finished.</p>` : ''}`);
   }
 
@@ -2158,4 +2158,36 @@
     document.addEventListener('keydown', event => { if (event.key === 'Escape') close(); });
   };
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', ready); else ready();
+})();
+
+/* 2026-11: show the admin's PC path for mirrored Google Drive folders, with a copy button. */
+(() => {
+  const cache = new Map();
+  const fill = async el => {
+    const folder = el.dataset.folder;
+    if (!folder || el.dataset.done) return;
+    el.dataset.done = '1';
+    const caps = (window.VTP && VTP.isAdmin) ? true : document.querySelector('#vtp-app[data-role="admin"]');
+    if (!caps) { el.remove(); return; }
+    try {
+      if (!cache.has(folder)) {
+        cache.set(folder, fetch(`${VTP.root}drive/mapped-path?folderUrl=${encodeURIComponent(folder)}`, { headers: { 'X-WP-Nonce': VTP.nonce }, credentials: 'same-origin', cache: 'no-store' }).then(r => r.ok ? r.json() : Promise.reject(r)));
+      }
+      const { mapped_path: path } = await cache.get(folder);
+      if (!path) throw new Error('none');
+      el.classList.add('vtp-pc-path');
+      el.innerHTML = '';
+      const code = document.createElement('code'); code.textContent = path;
+      const btn = document.createElement('button'); btn.type = 'button'; btn.className = 'vtp-btn small'; btn.textContent = 'Copy path';
+      btn.addEventListener('click', async () => { try { await navigator.clipboard.writeText(path); btn.textContent = 'Copied ✓'; } catch (e) { window.prompt('Copy this path:', path); } setTimeout(() => { btn.textContent = 'Copy path'; }, 1800); });
+      const label = document.createElement('span'); label.textContent = 'On your PC:';
+      el.append(label, code, btn);
+    } catch (error) {
+      cache.delete(folder);
+      el.textContent = 'PC path unavailable until Google Drive is connected.';
+    }
+  };
+  const scan = () => document.querySelectorAll('[data-mapped-path-status][data-folder]:not([data-done])').forEach(fill);
+  const start = () => { scan(); new MutationObserver(scan).observe(document.body, { childList: true, subtree: true }); };
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start); else start();
 })();

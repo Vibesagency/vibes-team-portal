@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Vibes Team Portal
  * Description: Private employee workspace for Vibes Agency: client requests, quotations, projects, tasks, invoices, announcements and leave.
- * Version: 0.6.44
+ * Version: 0.6.45
  * Author: Vibes Agency
  * Text Domain: vibes-team-portal
  */
@@ -11,7 +11,7 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
-define('VTP_VERSION', '0.6.44');
+define('VTP_VERSION', '0.6.45');
 define('VTP_FILE', __FILE__);
 define('VTP_DIR', plugin_dir_path(__FILE__));
 define('VTP_URL', plugin_dir_url(__FILE__));

@@ -631,3 +631,7 @@ body:has(.vpm-connect-page) .vpm-compose{grid-template-columns:minmax(0,1fr) 34p
 .vtp-d-dot.available{color:#1E6B45}.vtp-d-dot.available::before{background:#2E8B57}
 .vtp-d-dot.busy::before{background:#C2550F}.vtp-d-dot.on_leave::before,.vtp-d-dot.on-leave::before{background:#5B2A9A}
 @media(max-width:720px){.vtp-d-stats{grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.vtp-d-stat strong{font-size:22px}.vtp-d-panel{padding:16px}}
+
+/* PC path for mirrored Drive folders (admin only) */
+.vtp-pc-path{display:flex;flex-wrap:wrap;align-items:center;gap:6px 8px;margin-top:8px;font-size:12px;color:#5D5670}
+.vtp-pc-path code{flex:1 1 220px;min-width:0;padding:6px 8px;border-radius:8px;background:#F5F2F9;color:#2E1A4F;font-size:12px;word-break:break-all}

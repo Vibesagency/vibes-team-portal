@@ -303,6 +303,7 @@ class VTP_REST {
         $user = wp_get_current_user();
         $is_admin = current_user_can('vtp_manage_employees');
         $task_where = $is_admin ? '1=1' : $wpdb->prepare('assignee_id=%d', $user->ID);
+        if (current_user_can('vtp_manage_sales')) self::reconcile_lifecycle();
         return rest_ensure_response([
             'user' => self::user_payload($user),
             'capabilities' => [
@@ -316,7 +317,7 @@ class VTP_REST {
                 'filesAdmin' => self::manage_files_brand(),
             ],
             'stats' => [
-                'employees' => count(get_users(['role__in' => ['vibes_employee', 'vibes_manager']])),
+                'employees' => count(get_users(['role__in' => ['administrator', 'vibes_employee', 'vibes_manager']])),
                 'projects' => (int) $wpdb->get_var('SELECT COUNT(*) FROM ' . self::table('projects') . " WHERE status='active'"),
                 'tasks' => (int) $wpdb->get_var('SELECT COUNT(*) FROM ' . self::table('tasks') . " WHERE {$task_where} AND status <> 'done'"),
                 'pendingLeave' => (int) $wpdb->get_var('SELECT COUNT(*) FROM ' . self::table('leave_requests') . " WHERE status='pending'"),
@@ -974,7 +975,7 @@ class VTP_REST {
         $total = esc_html($invoice['currency'] . ' ' . number_format((float) $invoice['total'], 2));
         $client = esc_html($invoice['client_name']);
         $payment_url = 'https://vibesagency.co/pay-invoice';
-        $message = '<div style="font-family:Arial,sans-serif;color:#231a30;line-height:1.6;max-width:620px;margin:auto"><h1 style="color:#60338d">Your Vibes invoice is ready</h1><p>Hello ' . $client . ',</p><p>Your project <strong>' . esc_html($project['name']) . '</strong> has been approved and completed.</p><p>Invoice <strong>' . esc_html($invoice['invoice_number']) . '</strong> total: <strong>' . $total . '</strong>.</p><p>The branded invoice PDF is attached for your records. Payment is due after delivery according to the agreed payment terms.</p><p style="margin:26px 0"><a href="' . esc_url($payment_url) . '" style="background:#60338d;color:#fff;text-decoration:none;padding:13px 22px;border-radius:9px;font-weight:bold">View payment options</a></p><p>Payment options include bank transfer, OMT and Wish. Please include your invoice number with your payment.</p><p>Vibes Agency<br>Beirut, Lebanon<br>+96170606046<br><a href="https://vibesagency.co">vibesagency.co</a></p></div>';
+        $message = '<div style="font-family:Arial,sans-serif;color:#231a30;line-height:1.6;max-width:620px;margin:auto"><h1 style="color:#60338d">Your Vibes invoice is ready</h1><p>Hello ' . $client . ',</p><p>Your project <strong>' . esc_html($project['name']) . '</strong> has been approved and completed.</p><p>Invoice <strong>' . esc_html($invoice['invoice_number']) . '</strong> total: <strong>' . $total . '</strong>.</p><p>The branded invoice PDF is attached for your records. Payment is due after delivery according to the agreed payment terms.</p><p style="margin:26px 0"><a href="' . esc_url($payment_url) . '" style="background:#60338d;color:#fff;text-decoration:none;padding:13px 22px;border-radius:9px;font-weight:bold">View payment options</a></p><p>Payment options include bank transfer, OMT and Whish. Please include your invoice number with your payment.</p><p>Vibes Agency<br>Beirut, Lebanon<br>+96170606046<br><a href="https://vibesagency.co">vibesagency.co</a></p></div>';
         $pdf = self::invoice_pdf($invoice, $project);
         if (!$pdf) return false;
         $sent = self::send_mail((string) $invoice['email'], $subject, $message, true, [$pdf]);
@@ -1351,8 +1352,39 @@ class VTP_REST {
         }
         $wpdb->update(self::table('projects'), ['invoice_id' => null], ['invoice_id' => $id]);
         $wpdb->delete(self::table('notifications'), ['object_type' => 'invoice', 'object_id' => $id]);
+        // Remove the payment(s) that were synced from this invoice, so Finance doesn't keep orphaned income.
+        $payments = self::table('finance_payments');
+        if ($wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $payments)) === $payments) {
+            $wpdb->delete($payments, ['invoice_id' => $id]);
+        }
         $wpdb->delete(self::table('invoices'), ['id' => $id]);
         return rest_ensure_response(['deleted' => true]);
+    }
+
+    /**
+     * Keeps every record's lifecycle in agreement, whichever module changed it last.
+     * Idempotent and cheap: a few single-statement UPDATEs.
+     */
+    public static function reconcile_lifecycle(): void {
+        global $wpdb;
+        if (get_transient('vtp_reconciled')) return;
+        set_transient('vtp_reconciled', 1, 60);
+        $inq = self::table('inquiries');
+        $quo = self::table('quotations');
+        $inv = self::table('invoices');
+        $pro = self::table('projects');
+        $pay = self::table('finance_payments');
+        $now = current_time('mysql');
+        // Approved quotation → its inquiry is approved.
+        $wpdb->query($wpdb->prepare("UPDATE {$inq} i JOIN {$quo} q ON q.inquiry_id=i.id SET i.status='approved', i.updated_at=%s WHERE q.status='approved' AND i.status NOT IN ('approved','closed')", $now));
+        // Sent quotation → its inquiry is at least "quote sent".
+        $wpdb->query($wpdb->prepare("UPDATE {$inq} i JOIN {$quo} q ON q.inquiry_id=i.id SET i.status='quote_sent', i.updated_at=%s WHERE q.status IN ('sent','changes_requested') AND i.status IN ('new','contacted','brief_prepared')", $now));
+        // Paid invoice → its project is finished and archived.
+        $wpdb->query($wpdb->prepare("UPDATE {$pro} p JOIN {$inv} v ON (v.project_id=p.id OR v.id=p.invoice_id) SET p.status='finished', p.progress=100, p.invoice_id=v.id, p.archived_at=COALESCE(p.archived_at,%s), p.updated_at=%s WHERE v.status='paid' AND p.status<>'finished'", $now, $now));
+        // Payments whose invoice no longer exists.
+        if ($wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $pay)) === $pay) {
+            $wpdb->query("DELETE p FROM {$pay} p LEFT JOIN {$inv} v ON v.id=p.invoice_id WHERE p.invoice_id IS NOT NULL AND p.invoice_id<>0 AND v.id IS NULL");
+        }
     }
 
     public static function employees(): WP_REST_Response {
@@ -1954,7 +1986,13 @@ class VTP_REST {
 
     public static function change_password(WP_REST_Request $request) {
         $password = (string) $request['password'];
+        $current = (string) $request['currentPassword'];
+        $user = wp_get_current_user();
+        if (!$user || !$current || !wp_check_password($current, $user->user_pass, $user->ID)) {
+            return new WP_Error('wrong_password', 'Your current password is incorrect.', ['status' => 403]);
+        }
         if (strlen($password) < 10) return new WP_Error('weak_password', 'Use at least 10 characters.', ['status' => 400]);
+        if ($password === $current) return new WP_Error('same_password', 'Choose a password different from your current one.', ['status' => 400]);
         $id = get_current_user_id(); wp_set_password($password, $id); delete_user_meta($id, 'vtp_force_password_change');
         return rest_ensure_response(['changed' => true]);
     }

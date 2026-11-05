@@ -14,6 +14,47 @@ class VTP_App {
         add_action('template_redirect', [self::class, 'guard']);
         add_filter('wp_robots', [self::class, 'noindex']);
         add_filter('show_admin_bar', [self::class, 'admin_bar']);
+        // Don't let visitors who aren't signed in list account names.
+        add_filter('rest_endpoints', static function ($endpoints) {
+            if (is_user_logged_in()) return $endpoints;
+            foreach (array_keys($endpoints) as $route) {
+                if (strpos($route, '/wp/v2/users') === 0) unset($endpoints[$route]);
+            }
+            return $endpoints;
+        });
+        add_action('template_redirect', static function () {
+            if (!is_user_logged_in() && (is_author() || isset($_GET['author']))) { wp_safe_redirect(home_url('/'), 301); exit; }
+        }, 1);
+        // Brand the browser tab and the WordPress password-reset screens.
+        add_action('wp_head', [self::class, 'favicon'], 2);
+        add_action('login_head', [self::class, 'favicon'], 2);
+        add_action('login_enqueue_scripts', [self::class, 'login_brand']);
+        add_filter('login_headerurl', static fn() => home_url('/'));
+        add_filter('login_headertext', static fn() => 'Vibes Agency');
+        add_filter('login_title', static fn($title) => str_replace(['WordPress', '—'], ['Vibes Team', '·'], (string) $title));
+    }
+
+    public static function favicon(): void {
+        if (has_site_icon()) return;
+        $svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" rx="14" fill="#5B2A9A"/><path d="M16 18l16 30 16-30" fill="none" stroke="#fff" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+        echo '<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,' . rawurlencode($svg) . '">' . "\n";
+    }
+
+    public static function login_brand(): void {
+        echo '<style>
+body.login{background:#F7F5FA;font-family:"DM Sans",system-ui,sans-serif;color:#1B1530}
+body.login #login h1 a{background:none;width:auto;height:auto;text-indent:0;font:800 34px/1 Manrope,system-ui,sans-serif;letter-spacing:-.03em;color:#1B1530;margin-bottom:18px}
+body.login #login h1 a::after{content:" team";font:500 14px "DM Sans",system-ui,sans-serif;color:#5D5670;letter-spacing:0}
+body.login form{border:1px solid #E7E2EE;border-radius:16px;box-shadow:0 10px 30px rgba(59,26,110,.08);padding:28px}
+body.login label{color:#1B1530;font-weight:600}
+body.login input[type=text],body.login input[type=email],body.login input[type=password]{border-radius:10px;border-color:#E7E2EE;min-height:44px}
+body.login input:focus{border-color:#5B2A9A;box-shadow:0 0 0 2px rgba(91,42,154,.2)}
+body.login .button-primary{background:#5B2A9A;border-color:#5B2A9A;border-radius:10px;min-height:44px;padding:0 20px;font-weight:600}
+body.login .button-primary:hover,body.login .button-primary:focus{background:#4A2283;border-color:#4A2283}
+body.login .message,body.login .notice{border-left-color:#5B2A9A;border-radius:10px}
+body.login #nav a,body.login #backtoblog a{color:#5B2A9A}
+body.login .language-switcher{display:none}
+</style><link rel="preconnect" href="https://fonts.googleapis.com"><link href="https://fonts.googleapis.com/css2?family=Manrope:wght@800&family=DM+Sans:wght@400;500;600&display=swap" rel="stylesheet">';
     }
 
     public static function guard(): void {
@@ -157,7 +198,7 @@ class VTP_App {
                 <a class="vtp-brand" href="#dashboard"><span class="vtp-logo-image" role="img" aria-label="Vibes Agency"></span></a>
                 <nav id="vtp-nav">
                     <div class="vtp-nav-group vtp-nav-group-dashboard" data-nav-group="dashboard">
-                        <a href="#dashboard" data-route="dashboard" class="active"><i><?php echo self::nav_icon('dashboard'); ?></i><span>Dashboard</span></a>
+                        <a href="#dashboard" data-route="dashboard" data-tab class="active"><i><?php echo self::nav_icon('dashboard'); ?></i><span>Dashboard</span></a>
                     </div>
                     <div class="vtp-nav-group" data-nav-group="sales">
                         <span class="vtp-nav-section-label">Sales &amp; Clients</span>
@@ -166,9 +207,9 @@ class VTP_App {
                     </div>
                     <div class="vtp-nav-group" data-nav-group="projects">
                         <span class="vtp-nav-section-label">Project Management</span>
-                        <a href="#projects" data-route="projects"><i><?php echo self::nav_icon('projects'); ?></i><span>Projects</span></a>
-                        <a href="#tasks" data-route="tasks"><i><?php echo self::nav_icon('tasks'); ?></i><span><?php echo $is_admin ? 'Tasks' : 'My Tasks'; ?></span></a>
-                        <a href="#calendar" data-route="calendar"><i><?php echo self::nav_icon('calendar'); ?></i><span>Calendar</span></a>
+                        <a href="#projects" data-route="projects" data-tab><i><?php echo self::nav_icon('projects'); ?></i><span>Projects</span></a>
+                        <a href="#tasks" data-route="tasks" data-tab><i><?php echo self::nav_icon('tasks'); ?></i><span><?php echo $is_admin ? 'Tasks' : 'My Tasks'; ?></span></a>
+                        <a href="#calendar" data-route="calendar" data-tab><i><?php echo self::nav_icon('calendar'); ?></i><span>Calendar</span></a>
                         <a href="#files" data-route="files"><i><?php echo self::nav_icon('files'); ?></i><span>Files &amp; Brand Assets</span></a>
                     </div>
                     <div class="vtp-nav-group" data-nav-group="team">
@@ -191,6 +232,7 @@ class VTP_App {
                         <span class="vtp-nav-section-label">Reports &amp; Insights</span>
                     </div>
                 </nav>
+                <button type="button" class="vtp-nav-more" aria-expanded="false" aria-controls="vtp-nav"><i><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg></i><span>Menu</span></button>
                 <div class="vtp-sidebar-links" aria-label="Vibes Agency links">
                     <a class="vtp-site-link" href="https://vibesagency.co/" target="_blank" rel="noopener noreferrer">
                         <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.7 2.5 4 5.5 4 9s-1.3 6.5-4 9c-2.7-2.5-4-5.5-4-9s1.3-6.5 4-9Z"/></svg>

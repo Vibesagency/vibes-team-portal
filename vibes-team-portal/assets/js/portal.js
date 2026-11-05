@@ -69,6 +69,12 @@
     return data;
   }
 
+  // A project's owner falls back to the people its tasks are assigned to.
+  function projectAssignees(project) {
+    const names = [...new Set((state.tasks || []).filter(task => Number(task.project_id) === Number(project.id) && task.assignee_name).map(task => task.assignee_name.split(' ')[0]))];
+    return names.join(', ');
+  }
+
   async function load(key, refresh = false) {
     if (!refresh && state[key]?.length) return state[key];
     state[key] = await api(key);
@@ -146,7 +152,7 @@
     const ready = projectIsReadyForReview(project);
     const structure = project.driveStructure || {};
     const monthOptions = (structure.months || []).map(month => `<option value="${esc(month.key)}">${esc(month.label)}</option>`).join('');
-    return `<article class="vtp-card vtp-project-card"><div class="vtp-card-head">${chip(finished ? 'Finished' : ready ? 'Ready for review' : (project.status || 'Active'), finished ? 'blue' : ready ? 'amber' : 'green')}<small>${fmt(project.due_date)}</small></div><h3>${esc(project.name)}</h3><p><strong>${esc(project.client || 'Internal')}</strong>${project.quote_number ? `<br>${esc(project.quote_number)} · ${Number(project.submitted_count || 0)}/${Number(project.task_count || 0)} tasks submitted` : ''}<br>${esc(project.description || 'No brief added yet.')}</p><div class="vtp-progress"><span style="width:${Number(project.progress || 0)}%"></span></div><div class="vtp-meta"><span>${esc(project.lead_name || 'Unassigned')}</span><b>${Number(project.progress || 0)}%</b></div><div class="vtp-card-actions">${!finished && (state.boot.capabilities.manageProjects || state.boot.capabilities.manageSales) ? `<button class="vtp-btn small" data-open-project="${project.id}">Manage project</button>` : ''}${!finished && ready && state.boot.capabilities.manageProjects ? `<button class="vtp-btn small primary" data-project-review="${project.id}">Send client review${monthOptions ? ' ↗' : ''}</button>` : ''}${project.client_review_token ? `<button class="vtp-btn small" data-copy-project-review="${project.id}">Copy review link</button>` : ''}${finished && project.invoice_id ? `<a class="vtp-btn small" href="#invoices">View invoice</a>` : ''}${state.boot.capabilities.manageProjects ? ` <button class="vtp-btn small danger" data-delete-project="${project.id}">Delete</button>` : ''}</div></article>`;
+    return `<article class="vtp-card vtp-project-card"><div class="vtp-card-head">${chip(finished ? 'Finished' : ready ? 'Ready for review' : (project.status || 'Active'), finished ? 'blue' : ready ? 'amber' : 'green')}<small>${fmt(project.due_date)}</small></div><h3>${esc(project.name)}</h3><p><strong>${esc(project.client || 'Internal')}</strong>${project.quote_number ? `<br>${esc(project.quote_number)} · ${Number(project.submitted_count || 0)}/${Number(project.task_count || 0)} tasks submitted` : ''}<br>${esc(project.description || 'No brief added yet.')}</p><div class="vtp-progress"><span style="width:${Number(project.progress || 0)}%"></span></div><div class="vtp-meta"><span>${esc(project.lead_name || projectAssignees(project) || 'Unassigned')}</span><b>${Number(project.progress || 0)}%</b></div><div class="vtp-card-actions">${!finished && (state.boot.capabilities.manageProjects || state.boot.capabilities.manageSales) ? `<button class="vtp-btn small" data-open-project="${project.id}">Manage project</button>` : ''}${!finished && ready && state.boot.capabilities.manageProjects ? `<button class="vtp-btn small primary" data-project-review="${project.id}">Send client review${monthOptions ? ' ↗' : ''}</button>` : ''}${project.client_review_token ? `<button class="vtp-btn small" data-copy-project-review="${project.id}">Copy review link</button>` : ''}${finished && project.invoice_id ? `<a class="vtp-btn small" href="#invoices">View invoice</a>` : ''}${state.boot.capabilities.manageProjects ? ` <button class="vtp-btn small danger" data-delete-project="${project.id}">Delete</button>` : ''}</div></article>`;
   };
 
   function formObject(form) { return Object.fromEntries(new FormData(form).entries()); }
@@ -388,61 +394,100 @@
 
   const routes = {
     dashboard: async () => {
-      const capabilities = state.boot.capabilities || {};
-      const salesLoads = capabilities.manageSales ? [load('inquiries', true), load('quotations', true), load('invoices', true)] : [];
-      const projectLoads = capabilities.manageProjects ? [load('projects', true)] : [];
-      await Promise.all([load('tasks', true), load('announcements', true), load('holidays', true), ...salesLoads, ...projectLoads]);
-      const stats = state.boot.stats || {};
+      // 2026-11 redesign: lead with decisions, use one definition per stage, show money in USD (book currency).
+      const caps = state.boot.capabilities || {};
+      const sales = !!caps.manageSales;
+      const admin = !!(caps.employees || caps.isAdmin);
+      await Promise.all([
+        load('tasks', true), load('announcements', true),
+        ...(sales ? [load('inquiries', true), load('quotations', true), load('invoices', true)] : []),
+        ...(caps.manageProjects || sales ? [load('projects', true)] : []),
+        ...(admin ? [load('employees', true)] : []),
+      ]);
       const today = todayIso();
-      const todayTasks = state.tasks.filter(task => task.due_date === today);
-      const nextHoliday = state.holidays.find(item => (item.end_date || item.holiday_date) >= today);
+      const low = value => String(value || '').toLowerCase();
+      const usd = (amount, currency) => low(currency) === 'sar' ? Number(amount || 0) / 3.75 : Number(amount || 0);
+      const fmtUsd = value => 'USD ' + Number(value || 0).toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 2 });
+      const daysLate = date => Math.max(1, Math.round((Date.parse(today) - Date.parse(String(date).slice(0, 10))) / 86400000));
       const inquiries = state.inquiries || [];
       const quotations = state.quotations || [];
       const invoices = state.invoices || [];
-      const activeProjects = Number(stats.projects || (state.projects || []).length || 0);
-      const openTasks = Number(stats.tasks || state.tasks.filter(item => !['completed', 'done', 'approved'].includes(String(item.status || '').toLowerCase())).length || 0);
-      const pendingLeave = Number(stats.pendingLeave || state.leave.filter(item => !['approved', 'rejected', 'cancelled'].includes(String(item.status || '').toLowerCase())).length || 0);
-      const employees = Number(stats.employees || state.employees.length || 0);
-      const newInquiries = Number(stats.newInquiries || inquiries.filter(item => ['new', 'received', 'open'].includes(String(item.status || '').toLowerCase())).length || 0);
-      const unpaidInvoices = Number(stats.unpaidInvoices || invoices.filter(item => !['paid', 'cancelled', 'void'].includes(String(item.status || '').toLowerCase())).length || 0);
-      const quoteReview = quotations.filter(item => ['sent', 'pending', 'pending_admin', 'awaiting_approval', 'draft'].includes(String(item.status || '').toLowerCase())).length;
-      const negotiation = quotations.filter(item => String(item.status || '').toLowerCase().includes('negoti')).length;
-      const invoiceValue = invoices.reduce((total, item) => total + Number(item.total || item.amount || 0), 0);
-      const actionBar = '<a class="vtp-btn" href="#inquiries">＋ New inquiry</a><a class="vtp-btn" href="#quotations">＋ New quotation</a><a class="vtp-btn primary" href="#projects">＋ New project</a>';
-      const dashboardStat = (label, value, symbol, href) => '<a class="vtp-card vtp-dashboard-stat" href="' + href + '"><span class="vtp-stat-icon">' + statIcon(symbol) + '</span><div><small>' + esc(label) + '</small><strong>' + esc(value) + '</strong></div></a>';
-      const attentionRow = (label, detail, href, tone) => '<a class="vtp-attention-row ' + (tone || '') + '" href="' + href + '"><span><strong>' + esc(label) + '</strong><small>' + esc(detail) + '</small></span><b>→</b></a>';
-      view.innerHTML = '<section class="vtp-page vtp-dashboard-enhanced">' +
-        pageHead('Good morning, <span>' + esc(state.boot.user.name) + '.</span>', 'Track sales, delivery, team capacity and cash flow from one place.', actionBar) +
-        '<div class="vtp-dashboard-toolbar"><span class="vtp-dashboard-kicker">Vibes operations overview</span><span class="vtp-dashboard-updated">Updated just now</span></div>' +
-        '<div class="vtp-grid six vtp-dashboard-metrics">' +
-          dashboardStat('Inquiries awaiting response', newInquiries, 'inbox', '#inquiries') +
-          dashboardStat('Quotations to review', quoteReview, 'quote', '#quotations') +
-          dashboardStat('Active projects', activeProjects, 'briefcase', '#projects') +
-          dashboardStat('Open tasks', openTasks, 'checklist', '#tasks') +
-          dashboardStat('Invoices awaiting payment', unpaidInvoices, 'receipt', '#invoices') +
-          dashboardStat('Employees', employees, 'users', '#employees') +
-        '</div>' +
-        '<div class="vtp-dashboard-enhanced-grid">' +
-          '<article class="vtp-card vtp-dashboard-panel vtp-pipeline-panel"><div class="vtp-card-head"><div><h2>Sales pipeline</h2><p class="vtp-panel-subtitle">Move opportunities from first inquiry to approved work.</p></div><a class="vtp-route-link" href="#crm">Open CRM →</a></div><div class="vtp-pipeline">' +
-            '<div class="vtp-pipeline-stage"><strong>' + esc(newInquiries) + '</strong><span>New inquiry</span><a href="#inquiries">Review →</a></div>' +
-            '<div class="vtp-pipeline-stage"><strong>' + esc(quotations.length) + '</strong><span>Quotation sent</span><a href="#quotations">Review →</a></div>' +
-            '<div class="vtp-pipeline-stage"><strong>' + esc(negotiation) + '</strong><span>Negotiation</span><a href="#quotations">Review →</a></div>' +
-            '<div class="vtp-pipeline-stage"><strong>' + esc(activeProjects) + '</strong><span>Won / active</span><a href="#projects">View →</a></div>' +
-          '</div></article>' +
-          '<article class="vtp-card vtp-dashboard-panel"><div class="vtp-card-head"><div><h2>Attention needed</h2><p class="vtp-panel-subtitle">Priority items that may need a decision.</p></div><a class="vtp-route-link" href="#analytics">Analytics →</a></div><div class="vtp-attention-list">' +
-            attentionRow('Overdue or blocked tasks', 'Open tasks: ' + openTasks, '#tasks', openTasks ? 'warning' : 'ok') +
-            attentionRow('Quotations awaiting approval', 'Review pipeline: ' + quoteReview, '#quotations', quoteReview ? 'warning' : 'ok') +
-            attentionRow('Invoices awaiting payment', 'Outstanding: ' + unpaidInvoices, '#invoices', unpaidInvoices ? 'warning' : 'ok') +
-            attentionRow('Drive and file operations', 'Open files and brand assets', '#files', 'ok') +
-          '</div></article>' +
-        '</div>' +
-        '<div class="vtp-dashboard-bottom">' +
-          '<article class="vtp-card vtp-dashboard-panel vtp-dashboard-wide"><div class="vtp-card-head"><div><h2>Today’s work</h2><p class="vtp-panel-subtitle">The next actions for your team.</p></div><a class="vtp-route-link" href="#tasks">View tasks →</a></div>' + (todayTasks.length ? todayTasks.map(taskCard).join('') : '<div class="vtp-preview-empty"><strong>No tasks due today</strong><span>Create a task to give the team a clear next action.</span><a class="vtp-btn small" data-open="task">＋ Create task</a></div>') + '</article>' +
-          '<article class="vtp-card vtp-dashboard-panel"><div class="vtp-card-head"><div><h2>Recent activity</h2><p class="vtp-panel-subtitle">Keep decisions and handoffs visible.</p></div><a class="vtp-route-link" href="#announcements">Updates →</a></div><div class="vtp-preview-list">' + (announcementPreview() || '<div class="vtp-preview-empty"><strong>No announcements yet</strong><span>Post the next team update.</span></div>') + '</div><a class="vtp-preview-link" href="#inquiries">' + (newInquiries ? 'Review new inquiries →' : 'Connect a lead to start the pipeline →') + '</a></article>' +
-          '<article class="vtp-card vtp-dashboard-panel"><div class="vtp-card-head"><div><h2>Upcoming</h2><p class="vtp-panel-subtitle">Calendar and team capacity.</p></div><a class="vtp-route-link" href="#calendar">Calendar →</a></div>' + (nextHoliday ? '<div class="vtp-upcoming-item"><strong>' + esc(nextHoliday.name) + '</strong><span>' + fmt(nextHoliday.holiday_date) + '</span></div>' : '<div class="vtp-preview-empty"><strong>No upcoming leave</strong><span>Your team has no leave requests to review.</span></div>') + '<div class="vtp-upcoming-item"><strong>' + esc(employees) + ' team member' + (employees === 1 ? '' : 's') + '</strong><span><a href="#employees">Manage capacity →</a></span></div></article>' +
-        '</div>' +
-        '<div class="vtp-dashboard-footer-note">Preview batch · data comes from the existing portal records · invoice value in view: ' + esc(invoiceValue ? money(invoiceValue) : '—') + '</div>' +
-      '</section>';
+      const projects = (state.projects || []).filter(project => low(project.status) !== 'finished');
+      const tasks = state.tasks || [];
+      const people = (state.employees || []).filter(user => user.active !== false);
+
+      // One pipeline, shared definitions.
+      const startedQuotes = new Set((state.projects || []).map(project => Number(project.quotation_id)).filter(Boolean));
+      const stage = {
+        inquiry: inquiries.filter(item => ['new', 'contacted', 'brief_prepared'].includes(low(item.status))),
+        quote: quotations.filter(item => ['sent', 'changes_requested'].includes(low(item.status))),
+        approved: quotations.filter(item => low(item.status) === 'approved' && !startedQuotes.has(Number(item.id))),
+        delivery: projects.filter(project => !projectIsReadyForReview(project)),
+        review: projects.filter(project => projectIsReadyForReview(project)),
+        paid: invoices.filter(item => low(item.status) === 'paid'),
+      };
+
+      // Needs your decision.
+      const needs = [];
+      const need = (tone, tag, title, detail, href, action) => needs.push({ tone, tag, title, detail, href, action });
+      stage.review.forEach(project => need('good', 'Ready for review', `${project.client || ''}${project.client ? ' — ' : ''}${project.name}`, 'All tasks submitted' + (project.due_date ? ` · due ${fmt(project.due_date)}` : ''), '#projects', 'Send to client'));
+      inquiries.filter(item => item.deadline && item.deadline < today && !['approved', 'closed'].includes(low(item.status))).forEach(item => need('late', `${daysLate(item.deadline)} day${daysLate(item.deadline) > 1 ? 's' : ''} overdue`, `Inquiry ${item.request_number} · ${item.client_name}`, `Deadline was ${fmt(item.deadline)} · status “${String(item.status).replaceAll('_', ' ')}”`, '#inquiries', 'Update status'));
+      quotations.filter(item => low(item.status) === 'changes_requested').forEach(item => need('info', 'Changes requested', `${item.quote_number} · ${item.client_name}`, 'The client asked for changes', '#quotations', 'Revise quote'));
+      stage.approved.forEach(item => need('info', 'Approved', `${item.quote_number} · ${item.client_name}`, 'Approved by the client — no project yet', '#quotations', 'Start project'));
+      invoices.filter(item => ['sent', 'overdue'].includes(low(item.status)) && item.due_date && item.due_date < today).forEach(item => need('late', 'Payment overdue', `${item.invoice_number} · ${item.client_name}`, `${money(item.total, item.currency || 'SAR')} · due ${fmt(item.due_date)}`, '#invoices', 'Follow up'));
+      invoices.filter(item => low(item.status) === 'draft').forEach(item => need('info', 'Draft invoice', `${item.invoice_number} · ${item.client_name}`, money(item.total, item.currency || 'SAR'), '#invoices', 'Send invoice'));
+      tasks.filter(task => task.due_date && task.due_date < today && !['done', 'completed', 'approved'].includes(low(task.status))).forEach(task => need('late', 'Task overdue', task.title || 'Task', `${task.assignee_name || 'Unassigned'} · due ${fmt(task.due_date)}`, '#tasks', 'Open task'));
+      const tagClass = { good: 'vtp-d-tag good', late: 'vtp-d-tag late', info: 'vtp-d-tag info' };
+      const needsHtml = needs.length
+        ? needs.slice(0, 6).map(item => `<div class="vtp-d-need"><span class="${tagClass[item.tone]}">${esc(item.tag)}</span><div class="vtp-d-need-copy"><strong>${esc(item.title)}</strong><small>${esc(item.detail)}</small></div><a class="vtp-btn small" href="${item.href}">${esc(item.action)}</a></div>`).join('')
+        : '<div class="vtp-d-empty"><strong>You’re all caught up</strong><span>Nothing needs a decision right now.</span></div>';
+
+      // Key numbers.
+      const collected = stage.paid.reduce((sum, item) => sum + usd(item.total, item.currency), 0);
+      const open = invoices.filter(item => ['sent', 'overdue'].includes(low(item.status)));
+      const outstanding = open.reduce((sum, item) => sum + usd(item.total, item.currency), 0);
+      const available = people.filter(user => ['available', ''].includes(low(user.availability))).length;
+      const myOpen = tasks.filter(task => !['done', 'completed', 'approved'].includes(low(task.status)));
+      const weekEnd = new Date(Date.parse(today) + 7 * 86400000).toISOString().slice(0, 10);
+      const stat = (label, value, sub, href) => `<a class="vtp-card vtp-d-stat" href="${href}"><small>${esc(label)}</small><strong>${esc(value)}</strong><span>${esc(sub)}</span></a>`;
+      const stats = sales
+        ? stat('Collected', fmtUsd(collected), `${stage.paid.length} paid invoice${stage.paid.length === 1 ? '' : 's'} · SAR at 3.75`, '#invoices')
+          + stat('Outstanding', fmtUsd(outstanding), open.length ? `${open.length} unpaid invoice${open.length === 1 ? '' : 's'}` : 'No unpaid invoices', '#invoices')
+          + stat('Active projects', String(projects.length), stage.review.length ? `${stage.review.length} ready for client review` : 'None waiting on review', '#projects')
+          + (admin ? stat('Team available', `${available} of ${people.length}`, 'Based on availability status', '#employees') : stat('Open tasks', String(myOpen.length), 'Across all projects', '#tasks'))
+        : stat('My open tasks', String(myOpen.length), 'Assigned to you', '#tasks')
+          + stat('Due this week', String(myOpen.filter(task => task.due_date && task.due_date <= weekEnd).length), 'Next 7 days', '#calendar')
+          + stat('Waiting review', String(tasks.filter(task => low(task.status) === 'review').length), 'Submitted for approval', '#tasks');
+
+      const flow = sales ? `<article class="vtp-card vtp-d-panel"><div class="vtp-d-head"><h2>Work flow</h2><span>From first inquiry to payment</span></div><ol class="vtp-d-flow">${[
+          ['New inquiry', stage.inquiry.length, '#inquiries'], ['Quote sent', stage.quote.length, '#quotations'], ['Approved', stage.approved.length, '#quotations'],
+          ['In delivery', stage.delivery.length, '#projects'], ['Client review', stage.review.length, '#projects'], ['Paid', stage.paid.length, '#invoices'],
+        ].map(([label, count, href], index) => `<li class="s${index}"><a href="${href}"><strong>${count}</strong><span>${label}</span></a></li>`).join('')}</ol></article>` : '';
+
+      const ownerOf = project => project.lead_name || projectAssignees(project) || 'Unassigned';
+      const projectRows = projects.slice(0, 6).map(project => {
+        const total = Number(project.task_count || 0); const done = Number(project.submitted_count || 0);
+        const pct = Number(project.progress || (total ? Math.round(done / total * 100) : 0));
+        const ready = projectIsReadyForReview(project);
+        return `<tr><td><strong>${esc(project.name)}</strong><small>${esc(project.client || '')}</small></td><td>${esc(ownerOf(project))}</td><td><span class="vtp-d-bar"><span style="width:${pct}%"></span></span> <small>${total ? `${done}/${total}` : `${pct}%`}</small></td><td>${project.due_date ? esc(fmt(project.due_date)) : '—'}</td><td>${ready ? '<span class="vtp-d-tag good">Client review</span>' : '<span class="vtp-d-tag info">In delivery</span>'}</td></tr>`;
+      }).join('');
+      const projectsPanel = (caps.manageProjects || sales) ? `<article class="vtp-card vtp-d-panel vtp-d-wide"><div class="vtp-d-head"><h2>Projects</h2><a href="#projects">All projects</a></div>${projectRows ? `<div class="vtp-d-table"><table><thead><tr><th scope="col">Project</th><th scope="col">Owner</th><th scope="col">Progress</th><th scope="col">Due</th><th scope="col">Status</th></tr></thead><tbody>${projectRows}</tbody></table></div>` : '<div class="vtp-d-empty"><strong>No active projects</strong><span>Approved quotations become projects here.</span></div>'}</article>` : '';
+
+      const initials = name => String(name || '?').split(/\s+/).map(part => part[0]).join('').slice(0, 2).toUpperCase();
+      const teamPanel = admin ? `<article class="vtp-card vtp-d-panel"><div class="vtp-d-head"><h2>Team today</h2><a href="#employees">People</a></div>${people.map(user => `<div class="vtp-d-person"><span class="vtp-d-avatar">${esc(initials(user.name))}</span><div><strong>${esc(user.name)}</strong><small>${esc([user.position, user.department].filter(Boolean).join(' · '))}</small></div><span class="vtp-d-dot ${esc(low(user.availability) || 'available')}">${esc((user.availability || 'available').replace(/^./, c => c.toUpperCase()))}</span></div>`).join('')}</article>` : '';
+      const myTasks = !sales ? `<article class="vtp-card vtp-d-panel vtp-d-wide"><div class="vtp-d-head"><h2>My tasks</h2><a href="#tasks">All tasks</a></div>${myOpen.length ? myOpen.slice(0, 6).map(taskCard).join('') : '<div class="vtp-d-empty"><strong>No open tasks</strong><span>New assignments will appear here.</span></div>'}</article>` : '';
+      const recent = `<article class="vtp-card vtp-d-panel"><div class="vtp-d-head"><h2>Announcements</h2><a href="#announcements">All updates</a></div><div class="vtp-preview-list">${announcementPreview() || '<div class="vtp-d-empty"><strong>No announcements yet</strong><span>Company updates will show here.</span></div>'}</div></article>`;
+
+      const hour = Number(new Date().toLocaleString('en-GB', { hour: 'numeric', hour12: false, timeZone: typeof PORTAL_TIME_ZONE !== 'undefined' ? PORTAL_TIME_ZONE : undefined }));
+      const greeting = hour < 12 ? 'Good morning' : hour < 18 ? 'Good afternoon' : 'Good evening';
+      const firstName = String(state.boot.user.name || '').split(' ')[0];
+      const actions = sales ? '<a class="vtp-btn" href="#inquiries">＋ Inquiry</a><a class="vtp-btn" href="#quotations">＋ Quotation</a><a class="vtp-btn primary" href="#projects">＋ Project</a>' : '';
+      view.innerHTML = `<section class="vtp-page vtp-d">${pageHead(`${greeting}, <span>${esc(firstName)}</span>`, new Date().toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long' }), actions)}
+        <article class="vtp-card vtp-d-panel vtp-d-needs"><div class="vtp-d-head"><h2>Needs your decision${needs.length ? ` <em>· ${needs.length}</em>` : ''}</h2></div>${needsHtml}</article>
+        <div class="vtp-d-stats">${stats}</div>
+        ${flow}
+        <div class="vtp-d-grid">${projectsPanel}${myTasks}<div class="vtp-d-side">${teamPanel}${recent}</div></div>
+      </section>`;
     },
 
     employees: async () => {
@@ -489,7 +534,7 @@
     quotations: async () => {
       if (!state.boot.capabilities.manageSales) return routes.dashboard();
       const rows = await load('quotations', true);
-      view.innerHTML = `<section class="vtp-page">${pageHead('Quotations', 'Send secure proposals, collect client approval and activate approved work.', '<button class="vtp-btn" data-preview-template>Preview design</button><button class="vtp-btn primary" data-open="quotation">＋ New quotation</button>')}<div class="vtp-grid three">${rows.length ? rows.map(quote => `<article class="vtp-card vtp-quote-card" data-quote-id="${quote.id}" data-drive-folder-url="${esc(quote.drive_folder_url || '')}"><div class="vtp-card-head"><div><strong>${esc(quote.quote_number)}</strong>${Number(quote.period_index || 0) ? `<small class="vtp-cell-sub">Monthly draft ${Number(quote.period_index)} of ${Number(quote.contract_months || 0)}</small>` : Number(quote.contract_months || 0) > 1 ? `<small class="vtp-cell-sub">${Number(quote.contract_months)}-month master quotation · monthly drafts created</small>` : ''}</div>${chip(quote.status, quote.status === 'approved' ? 'green' : quote.status === 'changes_requested' ? 'coral' : quote.status === 'sent' ? 'amber' : '')}</div><h3>${esc(quote.company || quote.client_name)}</h3><p>${esc(quote.client_name)} · ${esc(quote.email)}</p><div class="vtp-quote-total">${money(quote.total, quote.currency)}</div><small>Valid until ${fmt(quote.valid_until)}</small>${quote.drive_file_url || quote.drive_folder_url ? `<div class="vtp-quote-drive-links"><small>Drive source of truth</small><div>${quote.drive_file_url ? `<a class="vtp-btn small" href="${esc(quote.drive_file_url)}" target="_blank" rel="noopener noreferrer">Open PDF in Drive ↗</a>` : ''}${quote.drive_folder_url ? `<a class="vtp-btn small" href="${esc(quote.drive_folder_url)}" target="_blank" rel="noopener noreferrer">Open quotation folder ↗</a>` : ''}</div><small data-mapped-path-status>PC mapped path will appear here for admin.</small></div>` : ''}<div class="vtp-card-actions"><button class="vtp-btn small" data-preview-quote="${quote.id}">Preview</button>${quote.status !== 'approved' ? `<button class="vtp-btn small primary" data-send-quote="${quote.id}">${quote.status === 'sent' ? 'Resend' : 'Send to client'}</button><button class="vtp-btn small" data-quote-status="${quote.id}" data-status="approved">Approve manually</button>` : ''}${quote.approval_token && quote.status !== 'draft' ? `<button class="vtp-btn small" data-copy-review="${quote.id}">Copy review link</button>` : ''}${!Number(quote.parent_quotation_id || 0) ? `<button class="vtp-btn small primary" data-quote-project="${quote.id}">Create project</button>` : ''} <button class="vtp-btn small danger" data-delete-quotation="${quote.id}">Delete</button></div>${quote.client_message ? `<div class="vtp-quote-response"><strong>Client response</strong><p>${esc(quote.client_message)}</p></div>` : ''}</article>`).join('') : empty('No quotations yet.')}</div></section>`;
+      view.innerHTML = `<section class="vtp-page">${pageHead('Quotations', 'Send secure proposals, collect client approval and activate approved work.', '<button class="vtp-btn" data-preview-template>Preview design</button><button class="vtp-btn primary" data-open="quotation">＋ New quotation</button>')}<div class="vtp-grid three">${rows.length ? rows.map(quote => `<article class="vtp-card vtp-quote-card" data-quote-id="${quote.id}" data-drive-folder-url="${esc(quote.drive_folder_url || '')}"><div class="vtp-card-head"><div><strong>${esc(quote.quote_number)}</strong>${Number(quote.period_index || 0) ? `<small class="vtp-cell-sub">Monthly draft ${Number(quote.period_index)} of ${Number(quote.contract_months || 0)}</small>` : Number(quote.contract_months || 0) > 1 ? `<small class="vtp-cell-sub">${Number(quote.contract_months)}-month master quotation · monthly drafts created</small>` : ''}</div>${chip(quote.status, quote.status === 'approved' ? 'green' : quote.status === 'changes_requested' ? 'coral' : quote.status === 'sent' ? 'amber' : '')}</div><h3>${esc(quote.company || quote.client_name)}</h3><p>${esc(quote.client_name)} · ${esc(quote.email)}</p><div class="vtp-quote-total">${money(quote.total, quote.currency)}</div><small>Valid until ${fmt(quote.valid_until)}</small>${quote.drive_file_url || quote.drive_folder_url ? `<div class="vtp-quote-drive-links"><small>Drive source of truth</small><div>${quote.drive_file_url ? `<a class="vtp-btn small" href="${esc(quote.drive_file_url)}" target="_blank" rel="noopener noreferrer">Open PDF in Drive ↗</a>` : ''}${quote.drive_folder_url ? `<a class="vtp-btn small" href="${esc(quote.drive_folder_url)}" target="_blank" rel="noopener noreferrer">Open quotation folder ↗</a>` : ''}</div><small data-mapped-path-status></small></div>` : ''}<div class="vtp-card-actions"><button class="vtp-btn small" data-preview-quote="${quote.id}">Preview</button>${quote.status !== 'approved' ? `<button class="vtp-btn small primary" data-send-quote="${quote.id}">${quote.status === 'sent' ? 'Resend' : 'Send to client'}</button><button class="vtp-btn small" data-quote-status="${quote.id}" data-status="approved">Approve manually</button>` : ''}${quote.approval_token && quote.status !== 'draft' ? `<button class="vtp-btn small" data-copy-review="${quote.id}">Copy review link</button>` : ''}${!Number(quote.parent_quotation_id || 0) ? `<button class="vtp-btn small primary" data-quote-project="${quote.id}">Create project</button>` : ''} <button class="vtp-btn small danger" data-delete-quotation="${quote.id}">Delete</button></div>${quote.client_message ? `<div class="vtp-quote-response"><strong>Client response</strong><p>${esc(quote.client_message)}</p></div>` : ''}</article>`).join('') : empty('No quotations yet.')}</div></section>`;
     },
 
     invoices: async () => {
@@ -512,7 +557,7 @@
     },
 
     projects: async () => {
-      const rows = await load('projects', true);
+      const [rows] = await Promise.all([load('projects', true), load('tasks')]);
       const pending = rows.filter(project => project.status !== 'finished' && !projectIsReadyForReview(project));
       const ready = rows.filter(project => projectIsReadyForReview(project));
       const finished = rows.filter(project => project.status === 'finished');
@@ -572,7 +617,7 @@
       let cells = Array.from({ length: leading }, () => '<div class="vtp-day muted" aria-hidden="true"></div>').join('');
       for (let day = 1; day <= days; day += 1) {
         const dateString = `${monthKey}-${String(day).padStart(2, '0')}`;
-        const taskEvents = state.tasks.filter(task => task.due_date === dateString).map(task => ({ text: `${task.task_number || `#${task.id}`} · ${task.title}`, kind: 'task' }));
+        const taskEvents = state.tasks.filter(task => task.due_date === dateString).map(task => ({ text: `${task.title || task.service_label || 'Task'}${(task.client_name || task.project_name) ? ` · ${task.client_name || task.project_name}` : ''}`, kind: 'task' }));
         const leaveEvents = state.leave.filter(item => item.status === 'approved' && item.start_date <= dateString && item.end_date >= dateString).map(item => ({ text: `${item.user_name || 'Team member'} · ${item.leave_type}`, kind: 'leave' }));
         const holidayEvents = state.holidays.filter(item => item.holiday_date <= dateString && (item.end_date || item.holiday_date) >= dateString).map(item => ({ text: item.name, kind: 'holiday' }));
         const events = [...holidayEvents, ...taskEvents, ...leaveEvents];
@@ -666,7 +711,8 @@
       view.innerHTML = `<section class="vtp-page vtp-files-page">${pageHead('Files & Brand', 'Keep Vibes resources and client folders organized in one clear workspace.', admin ? '<span class="vtp-admin-note">Admin controls are visible only to you.</span>' : '')}<section class="vtp-files-section"><div class="vtp-section-heading"><div><span class="vtp-eyebrow">VIBES AGENCY</span><h2>Vibes Agency Files</h2><p>Core brand resources for the team. Employees can open files; only the administrator can replace or link them.</p></div>${admin ? chip('Admin managed', 'green') : chip('Read only', 'blue')}</div><div class="vtp-grid two vtp-files-brand-grid">${(data.vibes || []).map(fileCard).join('')}</div></section><section class="vtp-files-section vtp-files-legacy-quotes" data-files-legacy-quotes="1"><div class="vtp-section-heading"><div><span class="vtp-eyebrow">QUOTATION REFERENCES</span><h2>Drive quotation samples</h2><p>These private Google Drive PDFs are replaceable references for one-time, six-month and one-year quotations.</p></div>${admin ? chip('Admin managed', 'green') : chip('Read only', 'blue')}</div><div class="vtp-grid two vtp-files-brand-grid">${(data.quotationTemplates || []).map(quotationTemplateCard).join('')}</div></section><section class="vtp-files-section"><div class="vtp-section-heading"><div><span class="vtp-eyebrow">CLIENT WORKSPACES</span><h2>Clients</h2><p>Each client has one linked folder for briefs, work-in-progress and final delivery.</p></div>${admin ? chip('Admin managed', 'green') : chip('Team access', 'blue')}</div><div class="vtp-grid two vtp-files-brand-grid">${(data.clients || []).map(clientCard).join('')}${addClient}</div>${!data.clients?.length && !admin ? empty('Client folders will appear here when the administrator adds them.') : ''}</section></section>`;
       const cleanFileMetadata = () => view.querySelectorAll('.vtp-files-page .vtp-file-card small').forEach(metaEl => {
         const clean = String(metaEl.textContent || '').replace(/^(?:PDF\s*·\s*)+/i, '');
-        if (clean) metaEl.textContent = `PDF · ${clean}`;
+        // Only uploaded PDFs are PDFs; Drive folders and Google Docs keep their own label.
+        if (clean) metaEl.textContent = /google|drive|folder|doc\b/i.test(clean) ? clean : `PDF · ${clean}`;
       });
       cleanFileMetadata();
       window.setTimeout(cleanFileMetadata, 350);
@@ -694,7 +740,7 @@
 
     profile: async () => {
       const user = state.boot.user;
-      view.innerHTML = `<section class="vtp-page">${pageHead('My profile', 'Manage your photo, account details and password.')}<div class="vtp-grid two"><article class="vtp-card"><h2>Profile</h2><div class="vtp-profile-card"><div><div class="vtp-profile-photo"><img id="vtp-profile-preview" src="${esc(user.avatar)}" alt="${esc(user.name)}"></div><form id="vtp-avatar-form" class="vtp-avatar-form" enctype="multipart/form-data"><input id="vtp-avatar-input" type="file" name="avatar" accept="image/jpeg,image/png,image/webp" required><button class="vtp-btn">Upload new photo</button><p class="vtp-avatar-help">JPG, PNG or WebP · maximum 5 MB.</p></form></div><div><h3>${esc(user.name)}</h3><div class="vtp-list"><div class="vtp-list-row"><span>Work email</span><strong>${esc(user.email)}</strong></div><div class="vtp-list-row"><span>Position</span><strong>${esc(user.position || 'Administrator')}</strong></div><div class="vtp-list-row"><span>Department</span><strong>${esc(user.department || 'Vibes Agency')}</strong></div><div class="vtp-list-row"><span>Phone</span><strong>${esc(user.phone || '—')}</strong></div><div class="vtp-list-row"><span>Joined</span><strong>${user.dateJoining ? fmt(user.dateJoining) : '—'}</strong></div></div></div></div></article>${profileDetailsForm(user)}<article class="vtp-card"><h2>Change password</h2><form id="vtp-password-form" class="vtp-form"><div class="vtp-field"><label>New password</label><input type="password" name="password" minlength="10" required></div><div class="vtp-field"><label>Confirm password</label><input type="password" name="confirm" minlength="10" required></div><button class="vtp-btn primary">Update password</button></form></article></div></section>`;
+      view.innerHTML = `<section class="vtp-page">${pageHead('My profile', 'Manage your photo, account details and password.')}<div class="vtp-grid two"><article class="vtp-card"><h2>Profile</h2><div class="vtp-profile-card"><div><div class="vtp-profile-photo"><img id="vtp-profile-preview" src="${esc(user.avatar)}" alt="${esc(user.name)}"></div><form id="vtp-avatar-form" class="vtp-avatar-form" enctype="multipart/form-data"><input id="vtp-avatar-input" type="file" name="avatar" accept="image/jpeg,image/png,image/webp" required><button class="vtp-btn">Upload new photo</button><p class="vtp-avatar-help">JPG, PNG or WebP · maximum 5 MB.</p></form></div><div><h3>${esc(user.name)}</h3><div class="vtp-list"><div class="vtp-list-row"><span>Work email</span><strong>${esc(user.email)}</strong></div><div class="vtp-list-row"><span>Position</span><strong>${esc(user.position || 'Administrator')}</strong></div><div class="vtp-list-row"><span>Department</span><strong>${esc(user.department || 'Vibes Agency')}</strong></div><div class="vtp-list-row"><span>Phone</span><strong>${esc(user.phone || '—')}</strong></div><div class="vtp-list-row"><span>Joined</span><strong>${user.dateJoining ? fmt(user.dateJoining) : '—'}</strong></div></div></div></div></article>${profileDetailsForm(user)}<article class="vtp-card"><h2>Change password</h2><form id="vtp-password-form" class="vtp-form"><div class="vtp-field"><label for="vtp-current-password">Current password</label><input id="vtp-current-password" type="password" name="currentPassword" autocomplete="current-password" required></div><div class="vtp-field"><label>New password</label><input type="password" name="password" minlength="10" required></div><div class="vtp-field"><label>Confirm password</label><input type="password" name="confirm" minlength="10" required></div><button class="vtp-btn primary">Update password</button></form></article></div></section>`;
     }
   };
 
@@ -1052,7 +1098,7 @@
       quotation: { path: 'quotations', state: ['quotations', 'projects', 'invoices'], message: 'Delete this quotation? Linked projects, tasks and invoices will be kept but unlinked.' },
       project: { path: 'projects', state: ['projects', 'tasks', 'invoices'], message: 'Delete this project and its assigned tasks? Issued invoices will be kept but unlinked.' },
       task: { path: 'tasks', state: ['tasks', 'projects', 'invoices'], message: 'Delete this task permanently?' },
-      invoice: { path: 'invoices', state: ['invoices', 'projects'], message: 'Delete this invoice permanently?' },
+      invoice: { path: 'invoices', state: ['invoices', 'projects'], message: 'Delete this invoice permanently? Any payment recorded for it will also be removed from Finance.' },
     };
     for (const [type, config] of Object.entries(deleteMap)) {
       const target = event.target.closest(`[data-delete-${type}]`);
@@ -1060,7 +1106,14 @@
       if (!confirm(config.message)) return;
       try {
         const key = `delete${type[0].toUpperCase()}${type.slice(1)}`;
-        await api(`${config.path}/${target.dataset[key]}`, { method: 'DELETE' });
+        const path = `${config.path}/${target.dataset[key]}`;
+        try {
+          await api(path, { method: 'DELETE' });
+        } catch (error) {
+          if (type !== 'quotation' || !/Google Drive/i.test(error.message)) throw error;
+          if (!confirm('Google Drive could not remove this quotation’s PDF. Delete the quotation from the portal anyway? The PDF will stay in Drive for you to remove manually.')) return;
+          await api(`${path}?force=1`, { method: 'DELETE' });
+        }
         config.state.forEach(name => { state[name] = []; });
         toast(`${type[0].toUpperCase()}${type.slice(1)} deleted.`);
         await route();
@@ -1504,7 +1557,7 @@
       }
       if (formId === 'vtp-password-form') {
         if (data.password !== data.confirm) throw new Error('Passwords do not match.');
-        await api('profile/password', { method: 'POST', body: JSON.stringify({ password: data.password }) });
+        await api('profile/password', { method: 'POST', body: JSON.stringify({ password: data.password, currentPassword: data.currentPassword }) });
         location.href = VTP.logout;
       }
     } catch (error) { toast(error.message, true); }
@@ -1672,7 +1725,7 @@
       const active = (employees || []).filter(item => item.active !== false && String(item.role || '').toLowerCase() !== 'admin');
       const first = active[0] || employees?.[0] || {};
       const options = active.map(item => `<option value="${esc(item.id)}">${esc(item.name)}${salaryUsd(item) ? ` · ${money(salaryUsd(item))}/mo` : ''}</option>`).join('');
-      view.innerHTML = `<section class="vtp-page vtp-payslips-page"><header class="vtp-page-head"><div><h1>Payslips</h1><p>Generate a print-ready monthly payslip from employee compensation and approved leave records.</p></div><span class="vtp-chip">Finance · USD</span></header><div class="vtp-payslip-layout"><article class="vtp-card vtp-payslip-controls"><div class="vtp-card-head"><div><h2>Create payslip</h2><p>Client invoice currency does not affect payroll. Payroll is always shown in USD.</p></div></div><form id="vtp-payslip-form" class="vtp-form"><label>Employee<select name="employeeId" required>${options || '<option value="">No employees found</option>'}</select></label><div class="vtp-form-row"><label>Pay period<input name="period" type="month" value="${currentPeriod()}" required></label><label>Issued date<input name="issuedDate" type="date" value="${today()}" required></label></div><div class="vtp-form-row"><label>Basic salary (USD)<input name="salary" type="number" min="0" step="0.01" value="${salaryUsd(first).toFixed(2)}" required></label><label>Payment method<select name="paymentMethod"><option>Bank Transfer</option><option>Cash</option><option>Wish</option></select></label></div><div class="vtp-form-row"><label>Sick leaves taken<input name="sickLeaves" type="number" min="0" step="1" value="${employeeLeave(first.id, currentPeriod()).sick}"></label><label>Annual leaves taken<input name="annualLeaves" type="number" min="0" step="1" value="${employeeLeave(first.id, currentPeriod()).annual}"></label></div><button class="vtp-btn primary" type="submit">Generate payslip</button><button class="vtp-btn" type="button" data-print-payslip>Print / Save PDF</button><button class="vtp-btn" type="button" data-send-payslip>Send to employee</button><small class="vtp-payslip-note">Send opens a pre-addressed email draft. Save the PDF first if you want to attach the payslip.</small></form></article><article class="vtp-payslip-preview-wrap"><div id="vtp-payslip-preview"></div></article></div></section>`;
+      view.innerHTML = `<section class="vtp-page vtp-payslips-page"><header class="vtp-page-head"><div><h1>Payslips</h1><p>Generate a print-ready monthly payslip from employee compensation and approved leave records.</p></div><span class="vtp-chip">Finance · USD</span></header><div class="vtp-payslip-layout"><article class="vtp-card vtp-payslip-controls"><div class="vtp-card-head"><div><h2>Create payslip</h2><p>Client invoice currency does not affect payroll. Payroll is always shown in USD.</p></div></div><form id="vtp-payslip-form" class="vtp-form"><label>Employee<select name="employeeId" required>${options || '<option value="">No employees found</option>'}</select></label><div class="vtp-form-row"><label>Pay period<input name="period" type="month" value="${currentPeriod()}" required></label><label>Issued date<input name="issuedDate" type="date" value="${today()}" required></label></div><div class="vtp-form-row"><label>Basic salary (USD)<input name="salary" type="number" min="0" step="0.01" value="${salaryUsd(first).toFixed(2)}" required></label><label>Payment method<select name="paymentMethod"><option>Bank Transfer</option><option>Cash</option><option>Whish</option></select></label></div><div class="vtp-form-row"><label>Sick leaves taken<input name="sickLeaves" type="number" min="0" step="1" value="${employeeLeave(first.id, currentPeriod()).sick}"></label><label>Annual leaves taken<input name="annualLeaves" type="number" min="0" step="1" value="${employeeLeave(first.id, currentPeriod()).annual}"></label></div><button class="vtp-btn primary" type="submit">Generate payslip</button><button class="vtp-btn" type="button" data-print-payslip>Print / Save PDF</button><button class="vtp-btn" type="button" data-send-payslip>Send to employee</button><small class="vtp-payslip-note">Send opens a pre-addressed email draft. Save the PDF first if you want to attach the payslip.</small></form></article><article class="vtp-payslip-preview-wrap"><div id="vtp-payslip-preview"></div></article></div></section>`;
       const form = document.querySelector('#vtp-payslip-form');
       if (form) renderPreview(form, first);
     } catch (error) {
@@ -2065,4 +2118,38 @@
   if (root) new MutationObserver(() => setTimeout(enhanceLeave, 80)).observe(root, { childList: true, subtree: true });
   window.addEventListener('hashchange', () => setTimeout(enhanceLeave, 150));
   setTimeout(enhanceLeave, 500);
+})();
+
+/* 2026-11 redesign pass: navigation tooltips and the phone menu sheet. */
+(() => {
+  const ready = () => {
+    const app = document.getElementById('vtp-app');
+    const nav = document.getElementById('vtp-nav');
+    if (!app || !nav) return;
+    // Works with older server markup too: mark the phone tabs and add the Menu button if missing.
+    ['dashboard', 'projects', 'tasks', 'calendar'].forEach(route => nav.querySelector(`a[data-route="${route}"]`)?.setAttribute('data-tab', ''));
+    let more = document.querySelector('.vtp-nav-more');
+    if (!more) {
+      more = document.createElement('button');
+      more.type = 'button'; more.className = 'vtp-nav-more'; more.setAttribute('aria-expanded', 'false'); more.setAttribute('aria-controls', 'vtp-nav');
+      more.innerHTML = '<i><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg></i><span>Menu</span>';
+      nav.after(more);
+    }
+    const label = () => nav.querySelectorAll('a').forEach(link => {
+      const text = (link.querySelector('span') || link).textContent.trim();
+      if (text && !link.title) { link.title = text; link.setAttribute('aria-label', text); }
+    });
+    label();
+    new MutationObserver(label).observe(nav, { childList: true, subtree: true });
+    const close = () => { app.classList.remove('vtp-nav-open'); if (more) more.setAttribute('aria-expanded', 'false'); };
+    if (more) more.addEventListener('click', () => {
+      const open = !app.classList.contains('vtp-nav-open');
+      app.classList.toggle('vtp-nav-open', open);
+      more.setAttribute('aria-expanded', String(open));
+    });
+    nav.addEventListener('click', event => { if (event.target.closest('a')) close(); });
+    window.addEventListener('hashchange', close);
+    document.addEventListener('keydown', event => { if (event.key === 'Escape') close(); });
+  };
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', ready); else ready();
 })();

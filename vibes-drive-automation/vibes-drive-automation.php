@@ -612,6 +612,11 @@ function vibes_drive_prepare_quotation_delete($response, $handler, $request) {
     if (!$quote) { return $response; }
     $deleted = vibes_drive_quotation_delete($quote);
     if (is_wp_error($deleted)) {
+        // An administrator can choose to delete the portal record anyway; the Drive PDF is then left in place.
+        if (!empty($request['force']) && current_user_can('manage_options')) {
+            error_log('[vibes-drive] Quotation ' . $quote_id . ' deleted without removing its Drive PDF: ' . $deleted->get_error_message());
+            return $response;
+        }
         return new WP_Error(
             'vibes_drive_quotation_delete_failed',
             'The quotation could not be deleted because its Google Drive PDF could not be removed. Please retry after Drive reconnects.',

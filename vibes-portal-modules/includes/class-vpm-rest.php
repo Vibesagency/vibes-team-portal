@@ -99,6 +99,12 @@ final class VPM_REST {
             ['methods' => 'GET', 'callback' => [self::class, 'finance_expenses'], 'permission_callback' => [self::class, 'finance']],
             ['methods' => 'POST', 'callback' => [self::class, 'finance_add_expense'], 'permission_callback' => [self::class, 'finance']],
         ]);
+        register_rest_route(self::NS, '/finance/expenses/(?P<id>\\d+)', [
+            'methods' => 'DELETE', 'callback' => [self::class, 'finance_void_expense'], 'permission_callback' => [self::class, 'finance'],
+        ]);
+        register_rest_route(self::NS, '/finance/payments/(?P<id>\\d+)', [
+            'methods' => 'DELETE', 'callback' => [self::class, 'finance_delete_payment'], 'permission_callback' => [self::class, 'finance'],
+        ]);
         register_rest_route(self::NS, '/finance/recurring-expenses', [
             ['methods' => 'GET', 'callback' => [self::class, 'finance_recurring_expenses'], 'permission_callback' => [self::class, 'finance']],
             ['methods' => 'POST', 'callback' => [self::class, 'finance_add_recurring_expense'], 'permission_callback' => [self::class, 'finance']],
@@ -341,7 +347,8 @@ final class VPM_REST {
         $conversation = self::assert_conversation($request); if (is_wp_error($conversation)) return $conversation;
         $message_id = absint($request['message']);
         $row = $wpdb->get_row($wpdb->prepare('SELECT * FROM ' . self::table('connect_messages') . ' WHERE id=%d AND conversation_id=%d', $message_id, $conversation), ARRAY_A);
-        if (!$row || (int) $row['user_id'] !== get_current_user_id() || $row['deleted_at']) return self::error('message_forbidden', 'You can only delete your own active messages.', 403);
+        $moderator = current_user_can('manage_options');
+        if (!$row || $row['deleted_at'] || ((int) $row['user_id'] !== get_current_user_id() && !$moderator)) return self::error('message_forbidden', 'You can only delete your own active messages.', 403);
         $wpdb->update(self::table('connect_messages'), ['deleted_at' => current_time('mysql'), 'body' => 'Message deleted'], ['id' => $message_id]);
         return rest_ensure_response(['id' => $message_id, 'deleted' => true]);
     }
@@ -491,6 +498,39 @@ final class VPM_REST {
         return in_array($invoice['status'], ['paid'], true) ? (float) $invoice['total'] : 0.0;
     }
 
+    /** Convert an amount to USD (the agency's book currency). */
+    public static function to_usd(float $amount, string $currency): float {
+        global $wpdb;
+        $currency = strtoupper($currency ?: 'USD');
+        if ($currency === 'USD') return $amount;
+        if ($currency === 'SAR') return $amount / 3.75;
+        $rate = (float) $wpdb->get_var($wpdb->prepare('SELECT rate FROM ' . self::table('finance_fx_rates') . " WHERE base_currency='USD' AND quote_currency=%s ORDER BY effective_date DESC,id DESC LIMIT 1", $currency));
+        if ($rate > 0) return $amount / $rate;
+        $inverse = (float) $wpdb->get_var($wpdb->prepare('SELECT rate FROM ' . self::table('finance_fx_rates') . " WHERE base_currency=%s AND quote_currency='USD' ORDER BY effective_date DESC,id DESC LIMIT 1", $currency));
+        if ($inverse > 0) return $amount * $inverse;
+        return $currency === 'LBP' ? $amount / 89500 : $amount;
+    }
+
+    public static function finance_void_expense(WP_REST_Request $request) {
+        global $wpdb; $id = (int) $request['id'];
+        if (!$wpdb->get_var($wpdb->prepare('SELECT id FROM ' . self::table('finance_expenses') . ' WHERE id=%d', $id))) return self::error('not_found', 'Expense not found.', 404);
+        $wpdb->update(self::table('finance_expenses'), ['status' => 'voided'], ['id' => $id]);
+        VPM_Permissions::audit('finance', 'expense_voided', 'expense', $id);
+        return rest_ensure_response(['voided' => true]);
+    }
+
+    public static function finance_delete_payment(WP_REST_Request $request) {
+        global $wpdb; $id = (int) $request['id'];
+        $row = $wpdb->get_row($wpdb->prepare('SELECT * FROM ' . self::table('finance_payments') . ' WHERE id=%d', $id), ARRAY_A);
+        if (!$row) return self::error('not_found', 'Payment not found.', 404);
+        if ((int) $row['invoice_id'] && $wpdb->get_var($wpdb->prepare('SELECT status FROM ' . self::table('invoices') . ' WHERE id=%d', (int) $row['invoice_id'])) === 'paid') {
+            return self::error('payment_locked', 'This payment belongs to a paid invoice. Change the invoice status first.', 409);
+        }
+        $wpdb->delete(self::table('finance_payments'), ['id' => $id]);
+        VPM_Permissions::audit('finance', 'payment_removed', 'payment', $id, ['amount' => $row['amount'], 'currency' => $row['currency']]);
+        return rest_ensure_response(['deleted' => true]);
+    }
+
     private static function finance_totals(): array {
         global $wpdb;
         $invoices = $wpdb->get_results('SELECT * FROM ' . self::table('invoices') . " WHERE status NOT IN ('voided','cancelled')", ARRAY_A);
@@ -504,12 +544,16 @@ final class VPM_REST {
         foreach ($wpdb->get_results('SELECT currency,SUM(amount) total FROM ' . self::table('finance_expenses') . " WHERE status <> 'voided' GROUP BY currency", ARRAY_A) as $row) $expenses[strtoupper($row['currency'])] = round((float) $row['total'], 2);
         $payroll = [];
         foreach ($wpdb->get_results('SELECT currency,SUM(amount) total FROM ' . self::table('finance_salary_payments') . " WHERE status IN ('planned','paid') GROUP BY currency", ARRAY_A) as $row) $payroll[strtoupper($row['currency'])] = round((float) $row['total'], 2);
-        $single = count($currency) === 1 ? reset($currency) : ['invoiced' => 'Mixed', 'collected' => 'Mixed', 'outstanding' => 'Mixed'];
-        return ['invoiced' => $single['invoiced'], 'collected' => $single['collected'], 'outstanding' => $single['outstanding'], 'expenses' => count($expenses) === 1 ? reset($expenses) : 'Mixed', 'payroll' => count($payroll) === 1 ? reset($payroll) : 'Mixed', 'estimatedProfit' => 'See by-currency totals', 'byCurrency' => $currency, 'expensesByCurrency' => $expenses, 'payrollByCurrency' => $payroll];
+        // Book currency is USD. SAR is pegged at 3.75; other currencies use the latest recorded FX rate.
+        $usd = static function (array $buckets): float { $sum = 0.0; foreach ($buckets as $code => $value) $sum += self::to_usd((float) $value, (string) $code); return round($sum, 2); };
+        $col = static function (string $key) use ($currency): array { $out = []; foreach ($currency as $code => $bucket) $out[$code] = $bucket[$key]; return $out; };
+        $invoiced = $usd($col('invoiced')); $collected = $usd($col('collected')); $outstanding = $usd($col('outstanding'));
+        $expenses_usd = $usd($expenses); $payroll_usd = $usd($payroll);
+        return ['currency' => 'USD', 'invoiced' => $invoiced, 'collected' => $collected, 'outstanding' => $outstanding, 'expenses' => $expenses_usd, 'payroll' => $payroll_usd, 'estimatedProfit' => round($collected - $expenses_usd - $payroll_usd, 2), 'byCurrency' => $currency, 'expensesByCurrency' => $expenses, 'payrollByCurrency' => $payroll];
     }
 
     public static function finance_dashboard() {
-        return rest_ensure_response(array_merge(self::finance_totals(), ['currencies' => ['USD', 'SAR', 'LBP'], 'note' => 'Totals are stored in source currency; convert only with an explicit historical FX rate.']));
+        return rest_ensure_response(array_merge(self::finance_totals(), ['currencies' => ['USD', 'SAR'], 'note' => 'Totals are in USD. SAR is converted at the fixed 3.75 peg; original records keep their own currency.']));
     }
 
     public static function finance_export(WP_REST_Request $request) {
@@ -577,7 +621,7 @@ final class VPM_REST {
     public static function finance_add_expense(WP_REST_Request $request) {
         global $wpdb; $body = self::body($request); $amount = round(max(0, (float) ($body['amount'] ?? 0)), 2); $date = sanitize_text_field($body['expenseDate'] ?? current_time('Y-m-d'));
         if (!$amount || !preg_match('/^\d{4}-\d{2}-\d{2}$/', $date)) return self::error('invalid_expense', 'Positive amount and valid expense date are required.');
-        $currency = in_array($body['currency'] ?? 'SAR', ['USD', 'SAR', 'LBP'], true) ? $body['currency'] : 'SAR';
+        $currency = in_array($body['currency'] ?? 'USD', ['USD', 'SAR'], true) ? $body['currency'] : 'USD';
         $wpdb->insert(self::table('finance_expenses'), ['category' => sanitize_key($body['category'] ?? 'general'), 'vendor' => sanitize_text_field($body['vendor'] ?? ''), 'description' => sanitize_textarea_field($body['description'] ?? ''), 'amount' => $amount, 'currency' => $currency, 'expense_date' => $date, 'receipt_attachment_id' => absint($body['receiptAttachmentId'] ?? 0) ?: null, 'created_by' => get_current_user_id(), 'created_at' => current_time('mysql')]);
         VPM_Permissions::audit('finance', 'expense_recorded', 'expense', (int) $wpdb->insert_id, ['amount' => $amount, 'currency' => $currency]);
         return new WP_REST_Response(['id' => (int) $wpdb->insert_id], 201);

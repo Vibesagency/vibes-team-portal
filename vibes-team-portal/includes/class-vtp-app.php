@@ -117,11 +117,11 @@ body.login .language-switcher{display:none}
         $is_portal_path = (bool) preg_match('#/team-portal/?$#', $path);
         if (!is_page(['team-login', 'team-portal', 'quotation-review', 'project-review']) && !$is_portal_path) return;
         wp_enqueue_style('vtp-fonts', 'https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@500;600;700;800&display=swap', [], null);
-        wp_enqueue_style('vtp-app', VTP_URL . 'assets/css/portal.css', ['vtp-fonts'], '0.6.61-connect-same-page');
+        wp_enqueue_style('vtp-app', VTP_URL . 'assets/css/portal.css', ['vtp-fonts'], VTP_VERSION);
         wp_enqueue_style('vtp-approval', VTP_URL . 'assets/css/approval.css', ['vtp-app'], '0.6.35-our-work-route');
         wp_enqueue_script('vtp-quote-reference', VTP_URL . 'assets/js/quotation-reference.js', [], '0.6.35-our-work-route', false);
         if (is_page('team-portal') || $is_portal_path) {
-            wp_enqueue_script('vtp-app', VTP_URL . 'assets/js/portal.js', ['vtp-quote-reference'], '0.6.59-connect-same-page', true);
+            wp_enqueue_script('vtp-app', VTP_URL . 'assets/js/portal.js', ['vtp-quote-reference'], VTP_VERSION, true);
             wp_localize_script('vtp-app', 'VTP', [
                 'root' => esc_url_raw(rest_url('vibes/v1/')),
                 'nonce' => wp_create_nonce('wp_rest'),

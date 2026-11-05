@@ -726,7 +726,7 @@ async function renderCRM() {
     return data;
   };
   const syncDashboardEmployees = async () => {
-    if (currentRoute() !== 'dashboard') return;
+    if (currentRoute() !== 'dashboard' || document.querySelector('.vtp-d')) return; // the redesigned dashboard already shows correct counts
     const target = document.querySelector('a[href="#employees"] strong');
     if (!target || target.dataset.vpmEmployeeCountSynced === '1') return;
     target.dataset.vpmEmployeeCountSynced = '1';

@@ -1,0 +1,98 @@
+/* Keep the quotation drawer inside the viewport and make its service rows responsive. */
+.vtp-drawer-panel:has(#vtp-quotation-form) {
+  width: min(980px, 100vw);
+  max-width: 100vw;
+  overflow-x: hidden;
+}
+
+#vtp-quotation-form,
+#vtp-quotation-form .vtp-field,
+#vtp-quotation-form input,
+#vtp-quotation-form select,
+#vtp-quotation-form textarea {
+  min-width: 0;
+  max-width: 100%;
+}
+
+#vtp-quotation-form .vtp-quote-item-head,
+#vtp-quotation-form .vtp-quote-item {
+  display: grid;
+  grid-template-columns: minmax(150px, 1.1fr) minmax(260px, 2fr) minmax(110px, .8fr) minmax(80px, .6fr) minmax(140px, .8fr) auto !important;
+  gap: 8px;
+  align-items: end;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+@media (min-width: 901px) {
+  #vtp-quotation-form .vtp-quote-cell label {
+    display: none;
+  }
+}
+
+#vtp-quotation-form .vtp-quote-item-head {
+  color: #735a8d;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  padding: 0 2px 4px;
+}
+
+#vtp-quotation-form .vtp-quote-cell label {
+  display: block;
+  margin: 0 0 5px;
+  color: #735a8d;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+}
+
+#vtp-quotation-form .vtp-quote-cell input[readonly] {
+  background: #f7f3fb;
+  color: #4d3d65;
+}
+
+#vtp-quotation-form .vtp-quote-item-custom .vtp-quote-cell input[readonly] {
+  background: #fff;
+}
+
+#vtp-quotation-form .vtp-quote-item > [data-remove-quote-item] {
+  margin-bottom: 8px;
+}
+
+@media (max-width: 900px) {
+  .vtp-drawer-panel:has(#vtp-quotation-form) {
+    width: 100vw;
+    padding: 20px;
+  }
+
+  #vtp-quotation-form .vtp-quote-item-head {
+    display: none;
+  }
+
+  #vtp-quotation-form .vtp-quote-item {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) !important;
+    padding: 12px;
+    border: 1px solid #e7dced;
+    border-radius: 12px;
+    background: #fbf9fd;
+  }
+
+  #vtp-quotation-form .vtp-quote-category,
+  #vtp-quotation-form .vtp-quote-service,
+  #vtp-quotation-form .vtp-quote-item > [data-remove-quote-item] {
+    grid-column: 1 / -1;
+  }
+}
+
+@media (max-width: 620px) {
+  #vtp-quotation-form .vtp-form-row {
+    grid-template-columns: 1fr;
+  }
+
+  #vtp-quotation-form .vtp-quote-item {
+    grid-template-columns: 1fr !important;
+  }
+}

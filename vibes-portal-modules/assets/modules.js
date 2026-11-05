@@ -477,34 +477,122 @@ window.__VPM_MODULES_PRESENT__ = true;
     } catch (error) { const badge = $d('#vpm-discovery-provider-badge'); if (badge) badge.textContent = 'Provider status unavailable'; }
   }
 async function renderCRM() {
-    loading('Opening CRM pipeline…');
+    // 2026-11: Prospects CRM — research-agent leads, public requests, and search settings.
+    const S = window.__vpcState || (window.__vpcState = { tab: 'prospects', sector: 'All', pri: 'Any priority', q: '', onlyEmail: false, onlyNew: false, rType: 'All', rPlat: 'All platforms', rOpen: false, open: new Set() });
+    try { const saved = localStorage.getItem('vpcTab'); if (saved && !S.loaded) S.tab = saved; } catch (e) {}
+    S.loaded = true;
+    loading('Opening CRM…');
+    let P = [], R = [], settings = null;
     try {
-      const [stages, leads, sources] = await Promise.all([api('crm/stages'), api('crm/leads?perPage=100'), api('crm/lead-hunter/sources')]);
-      const allRows = Array.isArray(leads.rows) ? leads.rows : [];
-      const isEvidence = (lead) => String(lead.lead_type || '') === 'public_search' || (String(lead.lead_type || '') === 'potential_opportunity' && String(lead.review_status || 'pending') !== 'approved');
-      const evidenceRows = allRows.filter(isEvidence);
-      const pipelineRows = allRows.filter((lead) => !isEvidence(lead));
-      const sourceKey = (source) => String(source.name || '').trim().toLowerCase() + '|' + String(source.source_type || '').trim().toLowerCase();
-      const uniqueSources = (Array.isArray(sources) ? sources : []).filter((source, index, rows) => rows.findIndex((item) => sourceKey(item) === sourceKey(source)) === index);
-      const typeLabel = (lead) => lead.lead_type === 'public_search' ? 'Search session' : lead.lead_type === 'potential_opportunity' ? 'Unverified signal' : (lead.lead_type || 'Lead');
-      const leadActions = (lead) => {
-        const review = lead.review_status === 'pending' ? `<button class="vpm-link" data-vpm-review="${lead.id}" data-action="approve">Approve</button><button class="vpm-link danger" data-vpm-review="${lead.id}" data-action="reject">Reject</button>` : '';
-        const convert = lead.review_status === 'approved' && lead.stage_key !== 'won' && !isEvidence(lead) ? `<button class="vpm-link" data-vpm-convert="${lead.id}">Convert</button><button class="vpm-link" data-vpm-outreach="${lead.id}">Draft outreach</button>` : '';
-        const evidence = lead.evidence_url ? `<a class="vpm-link" href="${esc(lead.evidence_url)}" target="_blank" rel="noopener noreferrer">Evidence ↗</a>` : '';
-        return review + convert + evidence;
+      [P, R, settings] = await Promise.all([api('crm/prospects?kind=prospect'), api('crm/prospects?kind=request'), api('crm/search-settings')]);
+    } catch (error) { root().innerHTML = message(error.message, 'error'); return; }
+    const validEmail = (e) => /^[^\s@<>"]+@[^\s@<>"]+\.[^\s@<>"]+$/.test(e || '');
+    const safeUrl = (u) => { try { const x = new URL(u); return /^https?:$/.test(x.protocol) ? x.href : ''; } catch (e) { return ''; } };
+    const shortUrl = (u) => u.replace(/^https?:\/\/(www\.)?/, '').replace(/\/$/, '');
+    const igHandle = (u) => { const m = u.match(/instagram\.com\/([^/?#]+)/i); return m ? '@' + m[1] : 'Instagram'; };
+    const days = (d) => d ? (Date.now() - new Date(d + 'T00:00:00').getTime()) / 864e5 : 99;
+    const order = { High: 0, Medium: 1, Low: 2 };
+    const splitBody = (b) => { const parts = String(b || '').split(/\n?— — —\n?/); return parts.length > 1 ? { ar: parts[0].trim(), en: parts.slice(1).join('\n').trim() } : { ar: '', en: String(b || '').trim() }; };
+    const toastMsg = (t) => { let el = document.getElementById('vpc-toast'); if (!el) { el = document.createElement('div'); el.id = 'vpc-toast'; el.className = 'vpc-toast'; el.setAttribute('role', 'status'); document.body.appendChild(el); } el.textContent = t; el.classList.add('on'); clearTimeout(toastMsg.t); toastMsg.t = setTimeout(() => el.classList.remove('on'), 1700); };
+    const copy = async (t, label) => { try { await navigator.clipboard.writeText(t); toastMsg(label + ' copied'); } catch (e) { window.prompt('Copy:', t); } };
+    const chipRow = (items, current, attr) => items.map((v) => `<button type="button" class="vpc-chip" data-${attr}="${esc(v)}" aria-pressed="${v === current}">${esc(v)}</button>`).join('');
+    const stat = (n, label, tone) => `<div class="vpc-stat ${tone || ''}"><b>${esc(n)}</b><span>${esc(label)}</span></div>`;
+    const icon = { mail: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="m3 7 9 6 9-6"/></svg>', phone: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4h4l2 5-2.5 1.5a11 11 0 0 0 5 5L15 13l5 2v4a2 2 0 0 1-2 2A16 16 0 0 1 3 6a2 2 0 0 1 2-2"/></svg>', web: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/></svg>', ig: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="5"/><circle cx="12" cy="12" r="4"/></svg>' };
+
+    const prospectsView = () => {
+      const sectors = ['All', ...[...new Set(P.map((x) => x.sector).filter(Boolean))].sort()];
+      const q = S.q.toLowerCase();
+      const rows = P.filter((x) => (S.sector === 'All' || x.sector === S.sector) && (S.pri === 'Any priority' || x.priority === S.pri) && (!S.onlyEmail || validEmail(x.email)) && (!S.onlyNew || (x.status || 'New') === 'New') && (!q || [x.name, x.city, x.why, x.pitch, x.sector].join(' ').toLowerCase().includes(q)))
+        .sort((a, b) => (order[a.priority] ?? 3) - (order[b.priority] ?? 3) || (validEmail(b.email) - validEmail(a.email)) || String(b.added || '').localeCompare(String(a.added || '')));
+      const count = (k) => P.filter((x) => (x.status || 'New') === k).length;
+      const card = (x) => {
+        const st = x.status || 'New'; const src = safeUrl(x.source || ''); const w = safeUrl(x.website || ''); const ig = safeUrl(x.instagram || '');
+        const { ar, en } = splitBody(x.emailBody); const mailto = validEmail(x.email) ? `mailto:${encodeURIComponent(x.email)}?subject=${encodeURIComponent(x.emailSubject || '')}&body=${encodeURIComponent(x.emailBody || '')}` : '';
+        const contact = [
+          validEmail(x.email) ? `<div class="vpc-line">${icon.mail}<span class="vpc-email">${esc(x.email)}</span><button type="button" class="vpc-mini" data-copy="email" data-id="${x.id}">Copy</button></div>` : '',
+          x.phone ? `<div class="vpc-line">${icon.phone}<a href="tel:${esc(String(x.phone).replace(/[^\d+]/g, ''))}">${esc(x.phone)}</a></div>` : '',
+          w ? `<div class="vpc-line">${icon.web}<a href="${esc(w)}" target="_blank" rel="noopener">${esc(shortUrl(w))}</a></div>` : '',
+          ig ? `<div class="vpc-line">${icon.ig}<a href="${esc(ig)}" target="_blank" rel="noopener">${esc(igHandle(ig))}</a></div>` : '',
+          !validEmail(x.email) ? `<div class="vpc-noemail">${esc(x.contactNote || 'No public email found')}</div>` : (x.contactNote ? `<small class="vpc-muted">${esc(x.contactNote)}</small>` : ''),
+        ].join('');
+        const draft = x.emailBody ? `<details class="vpc-draft" data-id="${x.id}"${S.open.has(x.id) ? ' open' : ''}><summary><span class="vpc-chev" aria-hidden="true">›</span>Email draft<span class="vpc-subj">${esc(x.emailSubject || '')}</span></summary><div class="vpc-draft-body"><div class="vpc-actions"><button type="button" class="vpc-btn primary" data-copy="all" data-id="${x.id}">Copy full email</button><button type="button" class="vpc-btn" data-copy="subject" data-id="${x.id}">Copy subject</button>${ar ? `<button type="button" class="vpc-btn" data-copy="ar" data-id="${x.id}">Copy Arabic</button><button type="button" class="vpc-btn" data-copy="en" data-id="${x.id}">Copy English</button>` : ''}${mailto ? `<a class="vpc-btn" href="${esc(mailto)}">Open in mail app</a>` : ''}${st === 'New' ? `<button type="button" class="vpc-btn" data-mark="${x.id}">Mark as contacted</button>` : ''}</div><div class="vpc-subject"><small>Subject</small><div dir="auto">${esc(x.emailSubject || '')}</div></div><div class="vpc-letters">${ar ? `<pre class="vpc-letter" lang="ar" dir="rtl"><small dir="ltr">Arabic</small>${esc(ar)}</pre>` : ''}<pre class="vpc-letter" lang="en"><small>English</small>${esc(en)}</pre></div></div></details>` : '';
+        return `<article class="vpc-card ${st === 'Won' || st === 'Not a fit' ? 'done' : ''}"><div class="vpc-main"><div><h3 class="vpc-name">${esc(x.name)}</h3><div class="vpc-muted">${esc([x.sector, x.city].filter(Boolean).join(' · '))}</div><div class="vpc-badges">${x.priority ? `<span class="vpc-pill pri-${esc(x.priority)}">${esc(x.priority)} priority</span>` : ''}${days(x.added) < 7 ? '<span class="vpc-pill new">New</span>' : ''}</div><label class="vpc-k" for="vpc-st-${x.id}">Status</label><select id="vpc-st-${x.id}" data-status="${x.id}">${['New', 'Contacted', 'Replied', 'Won', 'Not a fit'].map((o) => `<option${o === st ? ' selected' : ''}>${o}</option>`).join('')}</select></div><div class="vpc-col"><div><div class="vpc-k">Why now</div><p>${esc(x.why || '')}</p>${src ? `<a class="vpc-src" href="${esc(src)}" target="_blank" rel="noopener">Source ↗</a>` : ''}</div>${x.pitch ? `<div class="vpc-pitch"><div class="vpc-k">What to pitch</div><p>${esc(x.pitch)}</p></div>` : ''}</div><div class="vpc-contact"><div class="vpc-k">Contact</div>${contact}</div></div>${draft}</article>`;
       };
-      const renderLead = (lead, evidenceOnly) => `<article class="vpm-lead ${evidenceOnly ? 'vpm-lead-evidence' : ''}"><div class="vpm-lead-top"><strong>${esc(lead.company || 'Unnamed business')}</strong><span class="vpm-chip ${lead.lead_type === 'verified_demand' ? 'success' : evidenceOnly ? 'warning' : ''}">${esc(typeLabel(lead))}</span></div><p>${esc((lead.services || []).join(' · ') || 'Service not specified')}</p><small>Score ${esc(lead.lead_score ?? 0)} · ${esc(lead.review_status || 'pending')}${evidenceOnly ? ' · Evidence only — not in sales pipeline' : ''}</small><div class="vpm-lead-actions">${leadActions(lead)}</div></article>`;
-      const pipelineStages = stages.map((stage) => `<section class="vpm-stage"><h2>${esc(stage.label)} <span>${pipelineRows.filter((lead) => lead.stage_key === stage.stage_key).length}</span></h2>${pipelineRows.filter((lead) => lead.stage_key === stage.stage_key).map((lead) => renderLead(lead, false)).join('') || '<p class="vpm-empty">No qualified leads in this stage.</p>'}</section>`).join('');
-      const reviewMarkup = evidenceRows.map((lead) => renderLead(lead, true)).join('') || '<p class="vpm-empty">No public evidence records are waiting for review.</p>';
-      root().innerHTML = `<section class="vpm-page"><div class="vpm-page-head"><div><p class="vpm-eyebrow">VIBES CRM</p><h1>Sales pipeline</h1><p>Verified and manually created leads stay in the pipeline. Public articles and search sessions remain in review until an authorized person confirms real buyer intent.</p></div><button class="vpm-btn" id="vpm-new-lead">＋ Manual lead</button></div><div class="vpm-message info vpm-crm-intent-banner"><strong>Buyer-intent gate:</strong> ${esc(evidenceRows.length)} public evidence record(s) are kept out of the sales pipeline until reviewed. No scans or external searches run automatically.</div><div class="vpm-stats vpm-crm-summary">${card('Pipeline leads', pipelineRows.length, 'Verified or manual')}${card('Evidence review queue', evidenceRows.length, 'Articles and search sessions')}${card('Approved pipeline', pipelineRows.filter((lead) => lead.review_status === 'approved').length, 'Ready for qualification')}${card('Duplicate-safe sources', uniqueSources.length, 'Unique configurations shown')}</div><div class="vpm-pipeline">${pipelineStages}</div><article class="vpm-panel vpm-crm-review-queue"><div class="vpm-panel-head"><div><p class="vpm-eyebrow">REVIEW BEFORE OUTREACH</p><h2>Evidence review queue</h2><p class="vpm-muted">These records are not companies or opportunities yet. Open the evidence, verify the buyer request, then approve or dismiss it.</p></div><span class="vpm-chip warning">${esc(evidenceRows.length)} to review</span></div><div class="vpm-crm-review-list">${reviewMarkup}</div></article><div class="vpm-grid two"><article class="vpm-panel"><h2>Lead Hunter</h2><p class="vpm-muted">Daily scan uses only configured public RSS/Atom or official JSON endpoints. No unsolicited email is sent.</p><button class="vpm-btn primary" id="vpm-run-scan">Run configured scan</button><div class="vpm-source-list">${uniqueSources.map((source) => `<div><strong>${esc(source.name)}</strong><small>${esc(source.source_type)} · ${source.last_error ? esc(source.last_error) : source.last_success_at ? `Last success ${esc(source.last_success_at)}` : 'Not scanned'}</small></div>`).join('') || '<p class="vpm-empty">No configured sources.</p>'}</div></article><article class="vpm-panel"><h2>Add public source</h2><form id="vpm-source-form" class="vpm-form"><input name="name" placeholder="Source name" required><input name="endpointUrl" type="url" placeholder="https://example.com/feed.xml" required><select name="sourceType"><option value="rss">RSS / Atom</option><option value="json">Official JSON</option></select><button class="vpm-btn">Save source</button></form></article></div></section>`;
-      try { await renderLeadDiscoverySection(allRows); } catch (discoveryError) { const panel = document.querySelector('#vpm-lead-discovery'); if (panel) panel.insertAdjacentHTML('beforeend', message(discoveryError.message, 'error')); }
-      $('#vpm-new-lead')?.addEventListener('click', () => openLeadForm());
-      $('#vpm-run-scan')?.addEventListener('click', async () => { try { const result = await api('crm/lead-hunter/scan', {method:'POST', body:{}}); alert(JSON.stringify(result)); await renderCRM(); } catch (error) { alert(error.message); } });
-      $('#vpm-source-form')?.addEventListener('submit', async (event) => { event.preventDefault(); try { await api('crm/lead-hunter/sources', {method:'POST', body:Object.fromEntries(new FormData(event.currentTarget))}); await renderCRM(); } catch (error) { alert(error.message); } });
-      document.querySelectorAll('[data-vpm-review]').forEach((button) => button.addEventListener('click', async () => { button.disabled = true; try { await api('crm/lead-hunter/review', {method:'POST', body:{leadId:button.dataset.vpmReview, action:button.dataset.action}}); await renderCRM(); } catch (error) { button.disabled = false; alert(error.message); } }));
-      document.querySelectorAll('[data-vpm-convert]').forEach((button) => button.addEventListener('click', async () => { button.disabled = true; try { await api('crm/leads/' + button.dataset.vpmConvert + '/convert', {method:'POST', body:{}}); await renderCRM(); } catch (error) { button.disabled = false; alert(error.message); } }));
-      document.querySelectorAll('[data-vpm-outreach]').forEach((button) => button.addEventListener('click', async () => { try { const result = await api('crm/leads/' + button.dataset.vpmOutreach + '/outreach-draft', {method:'POST', body:{language:'en'}}); window.prompt('Draft prepared — review before sending', result.draft); } catch (error) { alert(error.message); } }));
-    } catch (error) { root().innerHTML = message(error.message, 'error'); }
+      return `<div class="vpc-stats">${stat(P.length, 'Prospects')}${stat(P.filter((x) => x.priority === 'High').length, 'High priority', 'hi')}${stat(P.filter((x) => validEmail(x.email)).length, 'With email', 'blue')}${stat(P.filter((x) => days(x.added) < 7).length, 'Added this week', 'pink')}${stat(count('Contacted'), 'Contacted', 'md')}${stat(count('Replied'), 'Replied', 'coral')}${stat(count('Won'), 'Won', 'ok')}</div>
+        <div class="vpc-bar"><div class="vpc-row">${chipRow(sectors, S.sector, 'sector')}</div><div class="vpc-row">${chipRow(['Any priority', 'High', 'Medium', 'Low'], S.pri, 'pri')}<span class="vpc-sep"></span><button type="button" class="vpc-chip tog" data-toggle="onlyEmail" aria-pressed="${S.onlyEmail}">Has email</button><button type="button" class="vpc-chip tog" data-toggle="onlyNew" aria-pressed="${S.onlyNew}">Not contacted yet</button><input type="search" class="vpc-search" placeholder="Search brand, city or idea" aria-label="Search prospects" value="${esc(S.q)}"><span class="vpc-count">${rows.length} of ${P.length}</span></div></div>
+        <div class="vpc-list">${P.length ? (rows.map(card).join('') || '<div class="vpc-empty">No prospects match these filters.</div>') : '<div class="vpc-empty">No prospects yet. The research agent adds new Saudi brands here every morning.</div>'}</div>`;
+    };
+
+    const requestsView = () => {
+      const plats = ['All platforms', ...[...new Set(R.map((x) => x.platform).filter(Boolean))].sort()];
+      const rows = R.filter((x) => (S.rType === 'All' || x.type === S.rType) && (S.rPlat === 'All platforms' || x.platform === S.rPlat) && (!S.rOpen || (x.status || 'New') === 'New'))
+        .sort((a, b) => String(b.added || '').localeCompare(String(a.added || '')) || String(a.deadline || '9').localeCompare(String(b.deadline || '9')));
+      const count = (k) => R.filter((x) => (x.status || 'New') === k).length;
+      const card = (x) => {
+        const st = x.status || 'New'; const u = safeUrl(x.url || ''); const tender = x.type === 'Open tender';
+        const fact = (k, v) => v ? `<div class="vpc-fact"><span>${k}</span><span dir="auto">${esc(v)}</span></div>` : '';
+        return `<article class="vpc-card ${st === 'Won' || st === 'Not a fit' ? 'done' : ''}"><div class="vpc-req"><div class="vpc-col"><div><h3 class="vpc-req-title" dir="auto">${esc(x.title)}</h3><div class="vpc-badges"><span class="vpc-pill ${tender ? 'tender' : 'plat'}">${esc(tender ? 'Open tender' : (x.platform || 'Request'))}</span>${x.countryVerified === false ? '<span class="vpc-pill warn">Country not verified</span>' : ''}${days(x.added) < 1.5 ? '<span class="vpc-pill new">New today</span>' : ''}</div></div>${x.need ? `<div><div class="vpc-k">What they need</div><p>${esc(x.need)}</p></div>` : ''}${x.fit ? `<div class="vpc-pitch"><div class="vpc-k">How Vibes fits</div><p>${esc(x.fit)}</p></div>` : ''}<div class="vpc-actions">${u ? `<a class="vpc-btn primary" href="${esc(u)}" target="_blank" rel="noopener">Open post ↗</a><button type="button" class="vpc-btn" data-copy="url" data-id="${x.id}">Copy link</button>` : ''}</div></div><div class="vpc-facts">${fact('Posted by', x.poster)}${fact('Location', x.location)}${fact('Budget', x.budget)}${fact('Posted', x.postedAt)}${fact('Deadline', x.deadline)}${x.howToRespond ? `<small class="vpc-muted">${esc(x.howToRespond)}</small>` : ''}<label class="vpc-k" for="vpc-rs-${x.id}">Status</label><select id="vpc-rs-${x.id}" data-status="${x.id}">${['New', 'Applied', 'In talks', 'Won', 'Not a fit'].map((o) => `<option${o === st ? ' selected' : ''}>${o}</option>`).join('')}</select></div></div></article>`;
+      };
+      return `<div class="vpc-stats">${stat(R.length, 'Requests')}${stat(R.filter((x) => x.type !== 'Open tender' && days(x.added) < 1.5).length, 'Found today', 'ok')}${stat(R.filter((x) => x.type === 'Open tender').length, 'Open tenders', 'coral')}${stat(count('Applied'), 'Applied', 'md')}${stat(count('In talks'), 'In talks', 'blue')}${stat(count('Won'), 'Won', 'ok')}</div>
+        <div class="vpc-bar"><div class="vpc-row">${chipRow(['All', 'Request', 'Open tender'], S.rType, 'rtype')}<span class="vpc-sep"></span>${chipRow(plats, S.rPlat, 'rplat')}<span class="vpc-sep"></span><button type="button" class="vpc-chip tog" data-toggle="rOpen" aria-pressed="${S.rOpen}">Not handled yet</button><span class="vpc-count">${rows.length} of ${R.length}</span></div></div>
+        <div class="vpc-list">${R.length ? (rows.map(card).join('') || '<div class="vpc-empty">No requests match these filters.</div>') : '<div class="vpc-empty">No requests yet. The research agent adds public requests from the last 24 hours every morning.</div>'}</div>`;
+    };
+
+    const settingsView = () => {
+      const allSectors = ['Beauty', 'Fashion', 'E-commerce', 'Coffee', 'Restaurants', 'Real estate', 'Clinics & wellness', 'Fitness', 'Hospitality', 'Startups'];
+      const allPlatforms = ['Mostaql', 'Khamsat', 'LinkedIn', 'X', 'Etimad tenders'];
+      const checks = (name, all, chosen) => all.map((v) => `<label class="vpc-check"><input type="checkbox" name="${name}" value="${esc(v)}"${chosen.includes(v) ? ' checked' : ''}><span>${esc(v)}</span></label>`).join('');
+      return `<form id="vpc-settings" class="vpc-settings"><p class="vpc-muted">The research agent reads these settings every morning before it searches. Changes apply from the next morning's run.</p>
+        <fieldset><legend>Sectors to search</legend><div class="vpc-checks">${checks('sectors', allSectors, settings.sectors || [])}</div></fieldset>
+        <div class="vpc-two"><label class="vpc-field"><span>Include keywords</span><small>One per line, Arabic or English. The agent looks for news and posts using these.</small><textarea name="includeKeywords" rows="7" dir="auto">${esc((settings.includeKeywords || []).join('\n'))}</textarea></label>
+        <label class="vpc-field"><span>Exclude keywords</span><small>One per line. Results mentioning these are skipped.</small><textarea name="excludeKeywords" rows="7" dir="auto">${esc((settings.excludeKeywords || []).join('\n'))}</textarea></label></div>
+        <label class="vpc-field"><span>Cities</span><small>One per line. Leave empty for all of Saudi Arabia.</small><textarea name="cities" rows="3">${esc((settings.cities || []).join('\n'))}</textarea></label>
+        <fieldset><legend>Where to look for requests</legend><div class="vpc-checks">${checks('platforms', allPlatforms, settings.platforms || [])}</div></fieldset>
+        <div class="vpc-three"><label class="vpc-field"><span>New prospects per day</span><input type="number" name="prospectsPerDay" min="1" max="15" value="${esc(settings.prospectsPerDay)}"></label><label class="vpc-field"><span>Requests per day</span><input type="number" name="requestsPerDay" min="0" max="15" value="${esc(settings.requestsPerDay)}"></label><label class="vpc-field"><span>Minimum request budget (USD)</span><input type="number" name="minBudgetUsd" min="0" step="50" value="${esc(settings.minBudgetUsd)}"></label></div>
+        <label class="vpc-check big"><input type="checkbox" name="smallBrandsOnly"${settings.smallBrandsOnly ? ' checked' : ''}><span>Prefer small and mid-sized brands (skip big groups that already have agencies)</span></label>
+        <label class="vpc-field"><span>Extra notes for the agent</span><small>Anything else to focus on, e.g. "Ramadan campaigns", "Lebanese brands entering KSA".</small><textarea name="notes" rows="3" dir="auto">${esc(settings.notes || '')}</textarea></label>
+        <div class="vpc-actions"><button class="vpc-btn primary" type="submit">Save search settings</button></div></form>`;
+    };
+
+    const draw = () => {
+      const newReq = R.filter((x) => (x.status || 'New') === 'New').length;
+      const tab = (key, label, n) => `<button type="button" class="vpc-tab" role="tab" data-tab="${key}" aria-selected="${S.tab === key}">${label}${n != null ? ` <span class="n">${n}</span>` : ''}</button>`;
+      root().innerHTML = `<section class="vpm-page vpc"><div class="vpm-page-head"><div><p class="vpm-eyebrow">VIBES CRM</p><h1>Prospects &amp; requests</h1><p>Saudi brands with a fresh reason to buy, with public contacts and a ready bilingual email, plus live public requests for agency work.</p></div></div>
+        <div class="vpc-tabs" role="tablist">${tab('prospects', 'Prospects', P.length)}${tab('requests', 'Requests', newReq)}${tab('settings', 'Search settings')}</div>
+        <div class="vpc-view">${S.tab === 'requests' ? requestsView() : S.tab === 'settings' ? settingsView() : prospectsView()}</div></section>`;
+      wire();
+    };
+
+    const setStatus = async (id, status, list) => {
+      try { const fresh = await api(`crm/prospects/${id}`, { method: 'PATCH', body: { status } }); const i = list.findIndex((x) => x.id === Number(id)); if (i >= 0) list[i] = fresh; toastMsg('Status saved'); draw(); }
+      catch (error) { toastMsg(error.message); }
+    };
+
+    const wire = () => {
+      const el = root();
+      el.querySelectorAll('[data-tab]').forEach((b) => b.addEventListener('click', () => { S.tab = b.dataset.tab; try { localStorage.setItem('vpcTab', S.tab); } catch (e) {} draw(); }));
+      el.querySelectorAll('[data-sector]').forEach((b) => b.addEventListener('click', () => { S.sector = b.dataset.sector; draw(); }));
+      el.querySelectorAll('[data-pri]').forEach((b) => b.addEventListener('click', () => { S.pri = b.dataset.pri; draw(); }));
+      el.querySelectorAll('[data-rtype]').forEach((b) => b.addEventListener('click', () => { S.rType = b.dataset.rtype; draw(); }));
+      el.querySelectorAll('[data-rplat]').forEach((b) => b.addEventListener('click', () => { S.rPlat = b.dataset.rplat; draw(); }));
+      el.querySelectorAll('[data-toggle]').forEach((b) => b.addEventListener('click', () => { S[b.dataset.toggle] = !S[b.dataset.toggle]; draw(); }));
+      const search = el.querySelector('.vpc-search');
+      if (search) search.addEventListener('input', () => { S.q = search.value; clearTimeout(wire.t); wire.t = setTimeout(() => { const pos = search.selectionStart; draw(); const s2 = root().querySelector('.vpc-search'); if (s2) { s2.focus(); s2.setSelectionRange(pos, pos); } }, 250); });
+      el.querySelectorAll('select[data-status]').forEach((s) => s.addEventListener('change', () => setStatus(s.dataset.status, s.value, S.tab === 'requests' ? R : P)));
+      el.querySelectorAll('[data-mark]').forEach((b) => b.addEventListener('click', () => setStatus(b.dataset.mark, 'Contacted', P)));
+      el.querySelectorAll('details.vpc-draft').forEach((d) => d.addEventListener('toggle', () => { const id = Number(d.dataset.id); d.open ? S.open.add(id) : S.open.delete(id); }));
+      el.querySelectorAll('[data-copy]').forEach((b) => b.addEventListener('click', () => {
+        const x = [...P, ...R].find((row) => row.id === Number(b.dataset.id)); if (!x) return; const { ar, en } = splitBody(x.emailBody);
+        ({ email: () => copy(x.email, 'Email address'), all: () => copy(x.emailBody || '', 'Email'), subject: () => copy(x.emailSubject || '', 'Subject'), ar: () => copy(ar, 'Arabic email'), en: () => copy(en, 'English email'), url: () => copy(x.url || '', 'Link') }[b.dataset.copy] || (() => {}))();
+      }));
+      const form = el.querySelector('#vpc-settings');
+      if (form) form.addEventListener('submit', async (event) => {
+        event.preventDefault(); const fd = new FormData(form); const lines = (k) => String(fd.get(k) || '').split(/\n+/).map((v) => v.trim()).filter(Boolean);
+        const body = { sectors: fd.getAll('sectors'), platforms: fd.getAll('platforms'), includeKeywords: lines('includeKeywords'), excludeKeywords: lines('excludeKeywords'), cities: lines('cities'), prospectsPerDay: Number(fd.get('prospectsPerDay')), requestsPerDay: Number(fd.get('requestsPerDay')), minBudgetUsd: Number(fd.get('minBudgetUsd')), smallBrandsOnly: fd.get('smallBrandsOnly') === 'on', notes: String(fd.get('notes') || '') };
+        try { settings = await api('crm/search-settings', { method: 'POST', body }); toastMsg('Search settings saved'); } catch (error) { toastMsg(error.message); }
+      });
+    };
+    draw();
   }
   function openLeadForm() {
     const panel = document.createElement('div'); panel.className = 'vpm-modal'; panel.innerHTML = `<div class="vpm-modal-card"><button class="vpm-modal-close" aria-label="Close">×</button><h2>Create manual lead</h2><form id="vpm-lead-form" class="vpm-form"><input name="company" placeholder="Company name" required><input name="country" value="Saudi Arabia" placeholder="Country"><input name="website" type="url" placeholder="Public website"><input name="contactName" placeholder="Public contact name"><input name="contactEmail" type="email" placeholder="Public business email"><input name="services" placeholder="Services (comma separated)"><textarea name="description" placeholder="Opportunity description"></textarea><button class="vpm-btn primary">Save lead</button></form></div>`; document.body.appendChild(panel); $('.vpm-modal-close', panel).addEventListener('click', () => panel.remove()); $('#vpm-lead-form', panel).addEventListener('submit', async (event) => { event.preventDefault(); const data = Object.fromEntries(new FormData(event.currentTarget)); data.services = data.services.split(',').map((item) => item.trim()).filter(Boolean); try { await api('crm/leads', {method:'POST', body:data}); panel.remove(); await renderCRM(); } catch (error) { alert(error.message); } });

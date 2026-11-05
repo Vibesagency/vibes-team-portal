@@ -37,6 +37,170 @@ final class VPM_REST {
         return new WP_Error($code, $message, ['status' => $status]);
     }
 
+    // ======================= Prospects CRM (2026-11) =======================
+    private const PROSPECT_FIELDS = ['name','sector','city','priority','why','pitch','source','website','instagram','email','phone','contactNote','emailSubject','emailBody','addedBy'];
+    private const REQUEST_FIELDS = ['title','type','platform','need','fit','poster','location','budget','postedAt','deadline','howToRespond','url','countryVerified','addedBy'];
+    private const ENRICH_FIELDS = ['website','instagram','email','phone','contactNote','emailSubject','emailBody'];
+    private const PROSPECT_STATUSES = ['New','Contacted','Replied','Won','Not a fit'];
+    private const REQUEST_STATUSES = ['New','Applied','In talks','Won','Not a fit'];
+
+    private static function no_cache(): void {
+        if (function_exists('nocache_headers')) nocache_headers();
+        do_action('litespeed_control_set_nocache', 'vibes prospects api');
+    }
+
+    public static function agent_auth(WP_REST_Request $request): bool {
+        $key = (string) get_option('vpm_agent_key', '');
+        $given = (string) $request->get_header('x-vibes-agent-key');
+        return $key !== '' && $given !== '' && hash_equals($key, $given);
+    }
+
+    private static function prospect_row(array $row): array {
+        $data = self::json_array($row['data'] ?? '');
+        return array_merge($data, [
+            'id' => (int) $row['id'], 'kind' => $row['kind'], 'slug' => $row['slug'], 'status' => $row['status'],
+            'priority' => $row['priority'] ?: ($data['priority'] ?? ''), 'sector' => $row['sector'] ?: ($data['sector'] ?? ''),
+            'added' => $row['added'], 'updatedAt' => $row['updated_at'],
+        ]);
+    }
+
+    private static function clean_fields(array $item, string $kind): array {
+        $allowed = $kind === 'request' ? self::REQUEST_FIELDS : self::PROSPECT_FIELDS;
+        $out = [];
+        foreach ($allowed as $field) {
+            if (!array_key_exists($field, $item)) continue;
+            $value = $item[$field];
+            if ($field === 'countryVerified') { $out[$field] = (bool) $value; continue; }
+            $value = is_scalar($value) ? (string) $value : '';
+            if (in_array($field, ['website','instagram','source','url'], true)) { $value = esc_url_raw($value); }
+            elseif ($field === 'email') { $value = is_email($value) ? sanitize_email($value) : ''; }
+            elseif (in_array($field, ['why','pitch','emailBody','need','fit','contactNote','howToRespond'], true)) { $value = sanitize_textarea_field($value); }
+            else { $value = sanitize_text_field($value); }
+            $out[$field] = mb_substr($value, 0, 6000);
+        }
+        return $out;
+    }
+
+    public static function prospects_list(WP_REST_Request $request) {
+        global $wpdb; self::no_cache();
+        $kind = $request->get_param('kind') === 'request' ? 'request' : 'prospect';
+        $rows = $wpdb->get_results($wpdb->prepare('SELECT * FROM ' . self::table('prospects') . ' WHERE kind=%s ORDER BY added DESC, id DESC LIMIT 1000', $kind), ARRAY_A);
+        return rest_ensure_response(array_map([self::class, 'prospect_row'], $rows ?: []));
+    }
+
+    public static function prospects_update(WP_REST_Request $request) {
+        global $wpdb;
+        $id = (int) $request['id'];
+        $row = $wpdb->get_row($wpdb->prepare('SELECT * FROM ' . self::table('prospects') . ' WHERE id=%d', $id), ARRAY_A);
+        if (!$row) return self::error('not_found', 'Prospect not found.', 404);
+        $body = self::body($request);
+        $update = ['updated_at' => current_time('mysql')];
+        if (isset($body['status'])) {
+            $allowed = $row['kind'] === 'request' ? self::REQUEST_STATUSES : self::PROSPECT_STATUSES;
+            if (!in_array($body['status'], $allowed, true)) return self::error('invalid_status', 'Choose a valid status.');
+            $update['status'] = $body['status'];
+        }
+        if (isset($body['notes'])) {
+            $data = self::json_array($row['data']);
+            $data['notes'] = sanitize_textarea_field((string) $body['notes']);
+            $update['data'] = wp_json_encode($data);
+        }
+        $wpdb->update(self::table('prospects'), $update, ['id' => $id]);
+        VPM_Permissions::audit('crm', 'prospect_updated', 'prospect', $id, ['status' => $update['status'] ?? null]);
+        $fresh = $wpdb->get_row($wpdb->prepare('SELECT * FROM ' . self::table('prospects') . ' WHERE id=%d', $id), ARRAY_A);
+        return rest_ensure_response(self::prospect_row($fresh));
+    }
+
+    private static function default_search_settings(): array {
+        return [
+            'sectors' => ['Beauty','Fashion','E-commerce','Coffee','Restaurants','Real estate','Clinics & wellness','Fitness','Hospitality','Startups'],
+            'includeKeywords' => ['افتتاح فرع','متجر سلة','إطلاق مجموعة جديدة','new branch','store launch','grand opening','funding round','Riyadh Season'],
+            'excludeKeywords' => ['government','وظائف','recruitment','job vacancy'],
+            'cities' => ['Riyadh','Jeddah','Dammam','Khobar','Makkah','Madinah'],
+            'platforms' => ['Mostaql','Khamsat','LinkedIn','X','Etimad tenders'],
+            'prospectsPerDay' => 6, 'requestsPerDay' => 5, 'minBudgetUsd' => 0, 'smallBrandsOnly' => true, 'notes' => '',
+        ];
+    }
+
+    private static function search_settings(): array {
+        $saved = get_option('vpm_prospect_search', []);
+        return array_merge(self::default_search_settings(), is_array($saved) ? $saved : []);
+    }
+
+    public static function prospects_settings_get() { self::no_cache(); return rest_ensure_response(self::search_settings()); }
+
+    public static function prospects_settings_save(WP_REST_Request $request) {
+        $body = self::body($request); $current = self::search_settings();
+        $list = static function ($value, int $max = 40): array {
+            $items = is_array($value) ? $value : preg_split('/[\n,،]+/u', (string) $value);
+            $items = array_values(array_unique(array_filter(array_map(static fn($v) => mb_substr(sanitize_text_field((string) $v), 0, 80), $items))));
+            return array_slice($items, 0, $max);
+        };
+        foreach (['sectors','includeKeywords','excludeKeywords','cities','platforms'] as $key) if (array_key_exists($key, $body)) $current[$key] = $list($body[$key]);
+        foreach (['prospectsPerDay' => [1, 15], 'requestsPerDay' => [0, 15], 'minBudgetUsd' => [0, 100000]] as $key => [$min, $max]) if (array_key_exists($key, $body)) $current[$key] = max($min, min($max, (int) $body[$key]));
+        if (array_key_exists('smallBrandsOnly', $body)) $current['smallBrandsOnly'] = (bool) $body['smallBrandsOnly'];
+        if (array_key_exists('notes', $body)) $current['notes'] = mb_substr(sanitize_textarea_field((string) $body['notes']), 0, 1500);
+        update_option('vpm_prospect_search', $current, false);
+        VPM_Permissions::audit('crm', 'search_settings_saved', 'settings', 0);
+        return rest_ensure_response($current);
+    }
+
+    public static function prospects_agent_key() { self::no_cache(); return rest_ensure_response(['key' => (string) get_option('vpm_agent_key', '')]); }
+
+    public static function agent_brief() {
+        global $wpdb; self::no_cache();
+        $rows = $wpdb->get_results('SELECT id, kind, slug, status, data FROM ' . self::table('prospects'), ARRAY_A) ?: [];
+        $existing = ['prospect' => [], 'request' => []]; $needs = [];
+        foreach ($rows as $row) {
+            $data = self::json_array($row['data']);
+            $existing[$row['kind']][] = ['slug' => $row['slug'], 'name' => $data['name'] ?? ($data['title'] ?? '')];
+            if ($row['kind'] === 'prospect' && (preg_match('/^(Contacts pending|No public email)/', (string) ($data['contactNote'] ?? '')) || empty($data['emailBody']))) {
+                $needs[] = ['slug' => $row['slug'], 'name' => $data['name'] ?? '', 'website' => $data['website'] ?? '', 'missingEmailDraft' => empty($data['emailBody'])];
+            }
+        }
+        return rest_ensure_response(['today' => wp_date('Y-m-d'), 'settings' => self::search_settings(), 'existing' => $existing, 'needsWork' => array_slice($needs, 0, 10)]);
+    }
+
+    public static function agent_leads(WP_REST_Request $request) {
+        global $wpdb; self::no_cache();
+        $items = self::body($request)['items'] ?? [];
+        if (!is_array($items) || !$items) return self::error('no_items', 'Send items: [{kind, slug, ...fields}].');
+        if (count($items) > 50) return self::error('too_many', 'Send at most 50 items per call.');
+        $table = self::table('prospects'); $now = current_time('mysql'); $result = ['created' => 0, 'updated' => 0, 'skipped' => []];
+        foreach ($items as $item) {
+            if (!is_array($item)) continue;
+            $kind = ($item['kind'] ?? '') === 'request' ? 'request' : 'prospect';
+            $slug = sanitize_title((string) ($item['slug'] ?? ($item['name'] ?? ($item['title'] ?? ''))));
+            if ($slug === '') { $result['skipped'][] = 'missing slug'; continue; }
+            $row = $wpdb->get_row($wpdb->prepare("SELECT * FROM {$table} WHERE kind=%s AND slug=%s", $kind, $slug), ARRAY_A);
+            if ($row) {
+                // Existing lead: only fill in contacts and email drafts; never touch its status.
+                $data = self::json_array($row['data']);
+                $patch = array_intersect_key(self::clean_fields($item, $kind), array_flip(self::ENRICH_FIELDS));
+                $patch = array_filter($patch, static fn($v) => $v !== '');
+                if (!$patch) { $result['skipped'][] = $slug . ': already exists'; continue; }
+                $wpdb->update($table, ['data' => wp_json_encode(array_merge($data, $patch)), 'updated_at' => $now], ['id' => (int) $row['id']]);
+                $result['updated']++;
+                continue;
+            }
+            $data = self::clean_fields($item, $kind);
+            $required = $kind === 'request' ? ['title', 'url'] : ['name', 'why'];
+            foreach ($required as $field) if (empty($data[$field])) { $result['skipped'][] = $slug . ': missing ' . $field; continue 2; }
+            $added = preg_match('/^\d{4}-\d{2}-\d{2}$/', (string) ($item['added'] ?? '')) ? $item['added'] : wp_date('Y-m-d');
+            $status_list = $kind === 'request' ? self::REQUEST_STATUSES : self::PROSPECT_STATUSES;
+            $status = in_array($item['status'] ?? 'New', $status_list, true) ? ($item['status'] ?? 'New') : 'New';
+            $wpdb->insert($table, [
+                'kind' => $kind, 'slug' => $slug, 'status' => $status,
+                'priority' => in_array($data['priority'] ?? '', ['High','Medium','Low'], true) ? $data['priority'] : '',
+                'sector' => mb_substr((string) ($data['sector'] ?? ''), 0, 60), 'added' => $added,
+                'data' => wp_json_encode($data), 'created_at' => $now, 'updated_at' => $now,
+            ]);
+            if ($wpdb->insert_id) { $result['created']++; } else { $result['skipped'][] = $slug . ': could not save'; }
+        }
+        VPM_Permissions::audit('crm', 'agent_leads_received', 'prospect', 0, ['created' => $result['created'], 'updated' => $result['updated']]);
+        return rest_ensure_response($result);
+    }
+
     public static function routes(): void {
         register_rest_route(self::NS, '/modules/bootstrap', [
             'methods' => 'GET', 'callback' => [self::class, 'module_bootstrap'], 'permission_callback' => [self::class, 'logged_in'],
@@ -131,6 +295,26 @@ final class VPM_REST {
         register_rest_route(self::NS, '/crm/stages', [
             ['methods' => 'GET', 'callback' => [self::class, 'crm_stages'], 'permission_callback' => [self::class, 'crm']],
             ['methods' => 'POST', 'callback' => [self::class, 'crm_save_stage'], 'permission_callback' => [self::class, 'crm']],
+        ]);
+        // ---- Prospects CRM (2026-11) ----
+        register_rest_route(self::NS, '/crm/prospects', [
+            'methods' => 'GET', 'callback' => [self::class, 'prospects_list'], 'permission_callback' => [self::class, 'crm'],
+        ]);
+        register_rest_route(self::NS, '/crm/prospects/(?P<id>\d+)', [
+            'methods' => 'PATCH', 'callback' => [self::class, 'prospects_update'], 'permission_callback' => [self::class, 'crm'],
+        ]);
+        register_rest_route(self::NS, '/crm/search-settings', [
+            ['methods' => 'GET', 'callback' => [self::class, 'prospects_settings_get'], 'permission_callback' => [self::class, 'crm']],
+            ['methods' => 'POST', 'callback' => [self::class, 'prospects_settings_save'], 'permission_callback' => [self::class, 'crm']],
+        ]);
+        register_rest_route(self::NS, '/crm/agent-key', [
+            'methods' => 'GET', 'callback' => [self::class, 'prospects_agent_key'], 'permission_callback' => static fn() => current_user_can('manage_options'),
+        ]);
+        register_rest_route(self::NS, '/agent/brief', [
+            'methods' => 'GET', 'callback' => [self::class, 'agent_brief'], 'permission_callback' => [self::class, 'agent_auth'],
+        ]);
+        register_rest_route(self::NS, '/agent/leads', [
+            'methods' => 'POST', 'callback' => [self::class, 'agent_leads'], 'permission_callback' => [self::class, 'agent_auth'],
         ]);
         register_rest_route(self::NS, '/crm/leads', [
             ['methods' => 'GET', 'callback' => [self::class, 'crm_leads'], 'permission_callback' => [self::class, 'crm']],

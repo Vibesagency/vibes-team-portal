@@ -10,7 +10,8 @@ final class VPM_Activator {
             self::seed();
             update_option('vpm_version', VPM_VERSION, false);
         }
-        if (!wp_next_scheduled('vpm_daily_lead_scan')) wp_schedule_event(time() + HOUR_IN_SECONDS, 'daily', 'vpm_daily_lead_scan');
+        // The Google keyword scanner is retired: prospects now come from the research agent.
+        if (wp_next_scheduled('vpm_daily_lead_scan')) wp_clear_scheduled_hook('vpm_daily_lead_scan');
     }
 
     public static function activate(): void {
@@ -18,9 +19,6 @@ final class VPM_Activator {
         self::tables();
         self::seed();
         update_option('vpm_version', VPM_VERSION, false);
-        if (!wp_next_scheduled('vpm_daily_lead_scan')) {
-            wp_schedule_event(time() + HOUR_IN_SECONDS, 'daily', 'vpm_daily_lead_scan');
-        }
     }
 
     private static function roles(): void {
@@ -313,7 +311,23 @@ final class VPM_Activator {
                 PRIMARY KEY (id), KEY area (area), KEY object_type (object_type,object_id), KEY created_at (created_at)
             ) {$charset};",
         ];
+        $sql[] = "CREATE TABLE {$p}prospects (
+                id bigint unsigned NOT NULL AUTO_INCREMENT,
+                kind varchar(20) NOT NULL DEFAULT 'prospect',
+                slug varchar(190) NOT NULL,
+                status varchar(30) NOT NULL DEFAULT 'New',
+                priority varchar(10) NOT NULL DEFAULT '',
+                sector varchar(60) NOT NULL DEFAULT '',
+                added date DEFAULT NULL,
+                data longtext,
+                created_at datetime NOT NULL,
+                updated_at datetime NOT NULL,
+                PRIMARY KEY  (id),
+                UNIQUE KEY kind_slug (kind,slug),
+                KEY kind_status (kind,status)
+            ) {$charset};";
         foreach ($sql as $statement) dbDelta($statement);
+        if (!get_option('vpm_agent_key')) add_option('vpm_agent_key', wp_generate_password(48, false, false), '', false);
     }
 
     private static function seed(): void {

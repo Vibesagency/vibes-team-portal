@@ -2,14 +2,14 @@
 /**
  * Plugin Name: Vibes Portal Modules
  * Description: Integrated Vibes Connect, Analytics, Finance, CRM and Lead Hunter modules for the existing Team Portal.
- * Version: 0.3.1
+ * Version: 0.4.0
  * Author: Vibes Agency
  * Text Domain: vibes-portal-modules
  */
 
 defined('ABSPATH') || exit;
 
-define('VPM_VERSION', '0.3.2');
+define('VPM_VERSION', '0.4.0');
 define('VPM_FILE', __FILE__);
 define('VPM_DIR', plugin_dir_path(__FILE__));
 define('VPM_URL', plugin_dir_url(__FILE__));

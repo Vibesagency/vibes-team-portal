@@ -437,6 +437,12 @@
       invoices.filter(item => ['sent', 'overdue'].includes(low(item.status)) && item.due_date && item.due_date < today).forEach(item => need('late', 'Payment overdue', `${item.invoice_number} · ${item.client_name}`, `${money(item.total, item.currency || 'SAR')} · due ${fmt(item.due_date)}`, '#invoices', 'Follow up'));
       invoices.filter(item => low(item.status) === 'draft').forEach(item => need('info', 'Draft invoice', `${item.invoice_number} · ${item.client_name}`, money(item.total, item.currency || 'SAR'), '#invoices', 'Send invoice'));
       tasks.filter(task => task.due_date && task.due_date < today && !['done', 'completed', 'approved'].includes(low(task.status))).forEach(task => need('late', 'Task overdue', task.title || 'Task', `${task.assignee_name || 'Unassigned'} · due ${fmt(task.due_date)}`, '#tasks', 'Open task'));
+      if (admin) {
+        try {
+          const drive = await fetch('/wp-json/vibes-drive/v1/status', { headers: { 'X-WP-Nonce': VTP.nonce }, credentials: 'same-origin', cache: 'no-store' }).then(r => r.ok ? r.json() : null);
+          if (drive && drive.connected && drive.working === false) need('late', 'Google Drive', 'Google Drive connection expired', 'Quotation PDFs and project folders can’t sync until you reconnect', '/wp-admin/options-general.php?page=vibes-drive-automation', 'Reconnect');
+        } catch (error) { /* Drive plugin not available */ }
+      }
       const tagClass = { good: 'vtp-d-tag good', late: 'vtp-d-tag late', info: 'vtp-d-tag info' };
       const needsHtml = needs.length
         ? needs.slice(0, 6).map(item => `<div class="vtp-d-need"><span class="${tagClass[item.tone]}">${esc(item.tag)}</span><div class="vtp-d-need-copy"><strong>${esc(item.title)}</strong><small>${esc(item.detail)}</small></div><a class="vtp-btn small" href="${item.href}">${esc(item.action)}</a></div>`).join('')

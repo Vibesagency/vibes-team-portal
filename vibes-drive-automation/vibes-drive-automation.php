@@ -117,7 +117,9 @@ function vibes_drive_render_settings() {
         </form>
         <hr>
         <h2>Google connection</h2>
-        <p>Status: <strong><?php echo $connected ? 'Connected' : 'Not connected'; ?></strong></p>
+        <?php $token_ok = $connected ? !is_wp_error(vibes_drive_access_token()) : false; ?>
+        <p>Status: <strong style="color:<?php echo $token_ok ? '#1E6B45' : '#9A3F0B'; ?>"><?php echo $token_ok ? 'Connected and working' : ($connected ? 'Login expired — Google rejected the saved connection. Click “Connect Google Drive” to sign in again.' : 'Not connected'); ?></strong></p>
+        <?php if ($connected && !$token_ok) : ?><p>If this keeps happening every week, the Google Cloud OAuth app is in “Testing” mode. Publish it (Google Cloud Console → APIs &amp; Services → OAuth consent screen → Publish app) so the connection stops expiring.</p><?php endif; ?>
         <p><strong>OAuth redirect URL</strong><br><code><?php echo esc_html(vibes_drive_admin_url()); ?></code></p>
         <?php if ($s['client_id'] && $s['client_secret']) : ?>
             <p><a class="button button-primary" href="<?php echo esc_url($oauth_url); ?>">Connect Google Drive</a></p>
@@ -187,6 +189,7 @@ function vibes_drive_oauth_callback() {
         wp_die('Google did not return a refresh token. Reconnect and approve offline access.');
     }
     $s['refresh_token'] = sanitize_text_field($body['refresh_token']);
+    delete_transient('vibes_drive_working');
     update_option(VIBES_DRIVE_OPTION, $s, false);
     wp_safe_redirect(vibes_drive_admin_url() . '&connected=1');
     exit;
@@ -1213,6 +1216,14 @@ add_action('rest_api_init', static function () {
             $s = vibes_drive_settings();
             return [
                 'connected' => !empty($s['refresh_token']),
+                'working' => (static function () use ($s) {
+                    if (empty($s['refresh_token'])) return false;
+                    $cached = get_transient('vibes_drive_working');
+                    if ($cached !== false) return $cached === 'yes';
+                    $ok = !is_wp_error(vibes_drive_access_token());
+                    set_transient('vibes_drive_working', $ok ? 'yes' : 'no', 10 * MINUTE_IN_SECONDS);
+                    return $ok;
+                })(),
                 'root_folder_id' => $s['root_folder_id'],
                 'projects_mapped' => count(vibes_drive_map()),
             ];

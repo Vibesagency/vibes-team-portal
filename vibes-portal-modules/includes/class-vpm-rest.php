@@ -232,7 +232,7 @@ final class VPM_REST {
             $today = wp_date('Y-m-d');
             $same_day = is_array($last) && ($last['day'] ?? '') === $today;
             update_option('vpm_agent_last_sync', [
-                'at' => current_time('mysql'), 'day' => $today,
+                'at' => current_time('mysql'), 'ts' => time(), 'day' => $today,
                 'created' => ($same_day ? (int) ($last['created'] ?? 0) : 0) + $result['created'],
                 'updated' => ($same_day ? (int) ($last['updated'] ?? 0) : 0) + $result['updated'],
             ], false);

@@ -205,3 +205,4 @@
 .vpc-toast.on{opacity:1;transform:translate(-50%,0)}
 @media(max-width:900px){.vpc-main{grid-template-columns:1fr 1fr}.vpc-main>.vpc-contact{grid-column:1/-1}}
 @media(max-width:720px){.vpc-main,.vpc-req,.vpc-two,.vpc-three{grid-template-columns:1fr}.vpc-main{padding:16px}.vpc-letters{grid-template-columns:1fr}.vpc-count{margin-left:0}.vpc select{max-width:none}}
+.vpc-agent{border-top:1px solid var(--vpc-line)!important;padding-top:16px!important}

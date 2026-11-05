@@ -311,10 +311,10 @@ final class VPM_REST {
             'methods' => 'GET', 'callback' => [self::class, 'prospects_agent_key'], 'permission_callback' => static fn() => current_user_can('manage_options'),
         ]);
         register_rest_route(self::NS, '/agent/brief', [
-            'methods' => 'GET', 'callback' => [self::class, 'agent_brief'], 'permission_callback' => [self::class, 'agent_auth'],
+            'methods' => 'GET', 'callback' => [self::class, 'agent_brief'], 'permission_callback' => static fn(WP_REST_Request $request) => self::agent_auth($request) || self::crm(),
         ]);
         register_rest_route(self::NS, '/agent/leads', [
-            'methods' => 'POST', 'callback' => [self::class, 'agent_leads'], 'permission_callback' => [self::class, 'agent_auth'],
+            'methods' => 'POST', 'callback' => [self::class, 'agent_leads'], 'permission_callback' => static fn(WP_REST_Request $request) => self::agent_auth($request) || self::crm(),
         ]);
         register_rest_route(self::NS, '/crm/leads', [
             ['methods' => 'GET', 'callback' => [self::class, 'crm_leads'], 'permission_callback' => [self::class, 'crm']],

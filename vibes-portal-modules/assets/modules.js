@@ -551,7 +551,8 @@ async function renderCRM() {
         <div class="vpc-three"><label class="vpc-field"><span>New prospects per day</span><input type="number" name="prospectsPerDay" min="1" max="15" value="${esc(settings.prospectsPerDay)}"></label><label class="vpc-field"><span>Requests per day</span><input type="number" name="requestsPerDay" min="0" max="15" value="${esc(settings.requestsPerDay)}"></label><label class="vpc-field"><span>Minimum request budget (USD)</span><input type="number" name="minBudgetUsd" min="0" step="50" value="${esc(settings.minBudgetUsd)}"></label></div>
         <label class="vpc-check big"><input type="checkbox" name="smallBrandsOnly"${settings.smallBrandsOnly ? ' checked' : ''}><span>Prefer small and mid-sized brands (skip big groups that already have agencies)</span></label>
         <label class="vpc-field"><span>Extra notes for the agent</span><small>Anything else to focus on, e.g. "Ramadan campaigns", "Lebanese brands entering KSA".</small><textarea name="notes" rows="3" dir="auto">${esc(settings.notes || '')}</textarea></label>
-        <div class="vpc-actions"><button class="vpc-btn primary" type="submit">Save search settings</button></div></form>`;
+        <div class="vpc-actions"><button class="vpc-btn primary" type="submit">Save search settings</button></div>
+        ${document.querySelector('#vtp-app[data-role="admin"]') ? `<fieldset class="vpc-agent"><legend>Daily research agent connection</legend><p class="vpc-muted">The research agent uses a private key to add prospects to this CRM. Copy it and paste it into the scheduled task where it says <b>PASTE_AGENT_KEY_HERE</b>. Keep it private.</p><div class="vpc-actions"><button type="button" class="vpc-btn" data-agent-key>Copy agent key</button></div></fieldset>` : ''}</form>`;
     };
 
     const draw = () => {
@@ -585,6 +586,8 @@ async function renderCRM() {
         const x = [...P, ...R].find((row) => row.id === Number(b.dataset.id)); if (!x) return; const { ar, en } = splitBody(x.emailBody);
         ({ email: () => copy(x.email, 'Email address'), all: () => copy(x.emailBody || '', 'Email'), subject: () => copy(x.emailSubject || '', 'Subject'), ar: () => copy(ar, 'Arabic email'), en: () => copy(en, 'English email'), url: () => copy(x.url || '', 'Link') }[b.dataset.copy] || (() => {}))();
       }));
+      const keyBtn = el.querySelector('[data-agent-key]');
+      if (keyBtn) keyBtn.addEventListener('click', async () => { try { const k = await api('crm/agent-key'); await navigator.clipboard.writeText(k.key); toastMsg('Agent key copied'); } catch (error) { toastMsg('Could not copy the key: ' + error.message); } });
       const form = el.querySelector('#vpc-settings');
       if (form) form.addEventListener('submit', async (event) => {
         event.preventDefault(); const fd = new FormData(form); const lines = (k) => String(fd.get(k) || '').split(/\n+/).map((v) => v.trim()).filter(Boolean);

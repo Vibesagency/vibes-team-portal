@@ -99,7 +99,7 @@
       text(currency,546.32,109.99,8.7,true,'#181126',true);
       const client=quote.company || quote.client_name || '';
       text(client,58.55,161.95,Math.min(14.24,210/Math.max(1,client.length)*1.8));
-      text(quote.country || quote.location || 'Location',58.55,185.26,8.22,false,'#806398');
+      if (quote.country || quote.location) text(quote.country || quote.location,58.55,185.26,8.22,false,'#806398');
       text(quote.email || '',58.55,199.24,8.22,false,'#806398');
       text(quote.phone || '',58.55,213.21,8.22,false,'#806398');
       if (!once) {

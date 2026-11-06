@@ -401,7 +401,7 @@ final class VPM_ClientPortal {
 
     public static function api_reviews(WP_REST_Request $r) {
         global $wpdb;
-        $projects = $wpdb->get_results('SELECT p.id, p.name, p.client, p.client_review_token, p.client_review_status, p.client_review_month, p.client_review_at, p.drive_client_url, q.email AS client_email FROM ' . self::t('projects') . ' p LEFT JOIN ' . self::t('quotations') . ' q ON q.id=p.quotation_id WHERE p.archived_at IS NULL ORDER BY p.id DESC LIMIT 200', ARRAY_A) ?: [];
+        $projects = $wpdb->get_results('SELECT p.id, p.name, p.client, p.client_review_token, p.client_review_status, p.client_review_month, p.client_review_at, p.drive_client_url, q.email AS client_email FROM ' . self::t('projects') . ' p LEFT JOIN ' . self::t('quotations') . ' q ON q.id=p.quotation_id WHERE (p.archived_at IS NULL OR LENGTH(p.client_review_token)>0) ORDER BY p.id DESC LIMIT 200', ARRAY_A) ?: [];
         $out = [];
         foreach ($projects as $p) {
             $pid = (int) $p['id']; $tok = (string) $p['client_review_token'];

@@ -854,6 +854,8 @@ function vibes_drive_project_sync($payload) {
         }
     }
     if (empty($details['id'])) { return new WP_Error('vibes_drive_project_id_missing', 'Project ID missing.'); }
+    // Name the project folder after the quotation number, never the bare numeric project id.
+    if (!empty($quotation) && is_array($quotation) && !empty($quotation['quote_number'])) { $details['project_number'] = $quotation['quote_number']; }
     $map = vibes_drive_map();
     $existing = $map[$details['id']] ?? [];
     $s = vibes_drive_settings();
@@ -871,7 +873,7 @@ function vibes_drive_project_sync($payload) {
     $project_folder = [];
     if (!empty($existing['project_folder_id'])) {
         $current_project_name = vibes_drive_file_name($existing['project_folder_id']);
-        $project_folder = vibes_drive_rename_if_generic($existing['project_folder_id'], $current_project_name, $project_name, ['Project']);
+        $project_folder = vibes_drive_rename_if_generic($existing['project_folder_id'], $current_project_name, $project_name, ['Project', (string) $details['id']]);
         $project_folder['webViewLink'] = $existing['project_folder_url'] ?? ('https://drive.google.com/drive/folders/' . $existing['project_folder_id']);
     }
     if (!$project_folder || empty($project_folder['id'])) { $project_folder = vibes_drive_find_child($client_folder['id'], $project_name); }
@@ -896,6 +898,14 @@ function vibes_drive_project_sync($payload) {
     if (is_wp_error($project_folder)) { return $project_folder; }
     $stages = vibes_drive_clone_template($s['template_folder_id'], $project_folder['id']);
     if (is_wp_error($stages)) { return $stages; }
+    // If the Drive template is empty or missing stages, create the standard stage folders so the pipeline never silently skips them.
+    foreach (['01 - Working', '02 - Admin Review', '03 - Client Approval', '04 - Client Approved', '05 - Archive'] as $stage_name) {
+        if (!empty($stages[$stage_name]['id'])) { continue; }
+        $stage_folder = vibes_drive_find_child($project_folder['id'], $stage_name);
+        if (!$stage_folder) { $stage_folder = vibes_drive_create_folder($stage_name, $project_folder['id']); }
+        if (is_wp_error($stage_folder)) { return $stage_folder; }
+        $stages[$stage_name] = $stage_folder;
+    }
     $working_id = $stages['01 - Working']['id'] ?? $project_folder['id'];
     $services = $existing['services'] ?? [];
     foreach ($details['services'] as $service) {

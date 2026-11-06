@@ -619,7 +619,7 @@
       const month = first.getUTCMonth();
       const monthKey = `${year}-${String(month + 1).padStart(2, '0')}`;
       const days = new Date(Date.UTC(year, month + 1, 0)).getUTCDate();
-      const leading = first.getUTCDay();
+      const leading = (first.getUTCDay() + 6) % 7;
       const today = todayIso();
       let cells = Array.from({ length: leading }, () => '<div class="vtp-day muted" aria-hidden="true"></div>').join('');
       for (let day = 1; day <= days; day += 1) {
@@ -630,7 +630,8 @@
         const events = [...holidayEvents, ...taskEvents, ...leaveEvents];
         const visibleEvents = events.slice(0, 3).map(event => `<span class="vtp-event ${event.kind}" title="${esc(event.text)}">${esc(event.text)}</span>`).join('');
         const more = events.length > 3 ? `<span class="vtp-calendar-more">＋ ${events.length - 3} more</span>` : '';
-        cells += `<div class="vtp-day${dateString === today ? ' today' : ''}" data-calendar-date="${dateString}"><b>${day}</b>${visibleEvents}${more}</div>`;
+        const dow = new Date(Date.UTC(year, month, day)).getUTCDay(); const weekend = dow === 0 || dow === 6;
+        cells += `<div class="vtp-day${dateString === today ? ' today' : ''}${weekend ? ' weekend' : ''}" data-calendar-date="${dateString}"><b>${day}</b>${weekend ? '<span class="vtp-weekend-tag">Weekly off</span>' : ''}${visibleEvents}${more}</div>`;
       }
       const trailing = (7 - ((leading + days) % 7)) % 7;
       cells += Array.from({ length: trailing }, () => '<div class="vtp-day muted" aria-hidden="true"></div>').join('');
@@ -639,7 +640,7 @@
       const visibleHolidays = state.holidays.filter(item => item.holiday_date <= `${monthKey}-${days}` && (item.end_date || item.holiday_date) >= `${monthKey}-01`).length;
       const actions = state.boot.capabilities.manageTasks ? '<button class="vtp-btn" data-open="holiday">＋ Add holiday</button><button class="vtp-btn primary" data-open="task">＋ Add task</button>' : '';
       const monthLabel = first.toLocaleString('en', { timeZone: 'UTC', month: 'long', year: 'numeric' });
-      view.innerHTML = `<section class="vtp-page vtp-calendar-page">${pageHead('Team calendar', 'Tasks, approved leave and company holidays together.', actions)}<article class="vtp-card vtp-calendar-card"><div class="vtp-calendar-toolbar"><div class="vtp-calendar-nav"><button class="vtp-calendar-arrow" data-calendar-shift="-1" aria-label="Previous month">‹</button><h2>${monthLabel}</h2><button class="vtp-calendar-arrow" data-calendar-shift="1" aria-label="Next month">›</button><button class="vtp-btn small" data-calendar-today>Today</button></div><div class="vtp-calendar-legend"><span class="task">${visibleTasks} tasks</span><span class="leave">${visibleLeave} leave</span><span class="holiday">${visibleHolidays} holidays</span></div></div><div class="vtp-calendar-scroll"><div class="vtp-calendar">${['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map(day => `<div class="vtp-day vtp-weekday"><b>${day}</b></div>`).join('')}${cells}</div></div></article>${state.boot.capabilities.manageLeave ? holidayList() : ''}</section>`;
+      view.innerHTML = `<section class="vtp-page vtp-calendar-page">${pageHead('Team calendar', 'Tasks, approved leave and company holidays together.', actions)}<article class="vtp-card vtp-calendar-card"><div class="vtp-calendar-toolbar"><div class="vtp-calendar-nav"><button class="vtp-calendar-arrow" data-calendar-shift="-1" aria-label="Previous month">‹</button><h2>${monthLabel}</h2><button class="vtp-calendar-arrow" data-calendar-shift="1" aria-label="Next month">›</button><button class="vtp-btn small" data-calendar-today>Today</button></div><div class="vtp-calendar-legend"><span class="task">${visibleTasks} tasks</span><span class="leave">${visibleLeave} leave</span><span class="holiday">${visibleHolidays} holidays</span></div></div><div class="vtp-calendar-scroll"><div class="vtp-calendar">${['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].map(day => `<div class="vtp-day vtp-weekday${day === 'Sat' || day === 'Sun' ? ' weekend' : ''}"><b>${day}</b></div>`).join('')}${cells}</div></div></article>${state.boot.capabilities.manageLeave ? holidayList() : ''}</section>`;
     },
 
     files: async () => {

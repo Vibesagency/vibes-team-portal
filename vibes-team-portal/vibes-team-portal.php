@@ -11,7 +11,7 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
-define('VTP_VERSION', '0.6.47');
+define('VTP_VERSION', '0.6.48');
 define('VTP_FILE', __FILE__);
 define('VTP_DIR', plugin_dir_path(__FILE__));
 define('VTP_URL', plugin_dir_url(__FILE__));

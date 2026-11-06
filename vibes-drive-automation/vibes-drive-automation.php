@@ -914,6 +914,14 @@ function vibes_drive_project_sync($payload) {
         $name = vibes_drive_pick($service, ['name', 'service', 'title', 'label'], 'Service');
         $label = vibes_drive_pick($service, ['label', 'service_label', 'serviceLabel', 'code'], '');
         $email = vibes_drive_pick($service, ['employee_email', 'employeeEmail', 'assignee_email', 'assigneeEmail', 'email']);
+        // A service folder that was already submitted has moved on to a later stage; never recreate an empty copy in 01 - Working.
+        $submitted_sources = array_filter(array_map(static fn($sub) => (string) ($sub['source_folder_id'] ?? ''), (array) ($existing['submissions'] ?? [])));
+        $already_submitted = false;
+        foreach ($services as $saved_chk) {
+            $same = strcasecmp((string) ($saved_chk['name'] ?? ''), $name) === 0 || ($label && strcasecmp((string) ($saved_chk['label'] ?? ''), $label) === 0);
+            if ($same && !empty($saved_chk['folder_id']) && in_array((string) $saved_chk['folder_id'], $submitted_sources, true)) { $already_submitted = true; break; }
+        }
+        if ($already_submitted) { continue; }
         $folder = vibes_drive_service_folder($working_id, $service);
         if (is_wp_error($folder)) { return $folder; }
         $matched = false;

@@ -452,7 +452,7 @@ final class VPM_ClientPortal {
 
     public static function page(): void {
         if (!is_page('project-review')) return;
-        status_header(200); nocache_headers();
+        status_header(200); nocache_headers(); do_action('litespeed_control_set_nocache', 'vibes client review');
         header('X-Robots-Tag: noindex, nofollow, noarchive'); header('Referrer-Policy: no-referrer'); header('X-LiteSpeed-Cache-Control: no-cache');
         $root = esc_url_raw(rest_url('vibes/v1/public/projects/'));
         $logo = defined('VTP_URL') ? VTP_URL . 'assets/images/vibes-logo-cropped.png' : '';
@@ -492,7 +492,7 @@ button,input,textarea{font:inherit;color:inherit}a{color:var(--p)}
 .vcr-btn{height:44px;padding:0 20px;border-radius:13px;border:1px solid var(--line);background:#fff;font-weight:700;cursor:pointer}.vcr-btn.pri{background:var(--p);border-color:var(--p);color:#fff}.vcr-btn:disabled{opacity:.55;cursor:default}
 .vcr-link{background:none;border:0;color:var(--mut);text-decoration:underline;cursor:pointer;padding:0 4px;font-size:13px}
 .vcr-okmsg{color:var(--ok);font-weight:700;font-size:14px}.vcr-sent{color:var(--mut);font-size:13px}
-.vcr-cm{flex-basis:100%;display:grid;gap:8px}.vcr-cm textarea{width:100%;min-height:96px;border:1px solid var(--line);border-radius:12px;padding:12px;resize:vertical;background:#fff}.vcr-cm div{display:flex;gap:8px;justify-content:flex-end}
+.vcr-cm{flex-basis:100%;display:grid;gap:8px}.vcr-cm[hidden]{display:none}.vcr-cm textarea{width:100%;min-height:96px;border:1px solid var(--line);border-radius:12px;padding:12px;resize:vertical;background:#fff}.vcr-cm div{display:flex;gap:8px;justify-content:flex-end}
 .vcr-wait{margin-top:18px;padding:14px 18px;border:1px dashed #cdbbe4;border-radius:16px;color:var(--mut);font-size:14px;background:rgba(255,255,255,.6)}
 .vcr-err{max-width:480px;margin:18vh auto;text-align:center;padding:0 20px}.vcr-err h1{font:800 22px 'Manrope'}.vcr-boot{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;min-height:60vh;color:var(--mut)}.vcr-boot p{margin:0}.vcr-boot span{width:30px;height:30px;border:3px solid var(--line);border-top-color:var(--p);border-radius:50%;animation:s 1s linear infinite}
 .vcr-toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);background:#231a30;color:#fff;padding:11px 18px;border-radius:12px;font-size:14px;z-index:30;max-width:90vw}

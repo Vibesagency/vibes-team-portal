@@ -1545,3 +1545,33 @@ async function renderCRM() {
   ['VPMOpenConnectOverlay', 'VPMCloseConnectOverlay'].forEach((name, i) => Object.defineProperty(window, name, {configurable: true, get: () => (i ? closeOverlay : openOverlay), set: () => {}}));
   if ((location.hash || '').slice(1).split('?')[0] === 'connect') { const go = () => (window.VPM && document.getElementById('vtp-view') ? openFromRoute() : setTimeout(go, 80)); go(); }
 })();
+
+/* Client feedback panel: approvals and admin-only comments for the client review page */
+(() => {
+  if (window.__vcfInstalled) return; window.__vcfInstalled = true;
+  const esc = (v) => String(v ?? '').replace(/[&<>'"]/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
+  const when = (s) => { if (!s) return ''; const d = new Date(String(s).replace(' ', 'T')); return isNaN(d) ? '' : d.toLocaleString('en-GB', {day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit'}); };
+  const inject = () => document.querySelectorAll('[data-copy-project-review]').forEach((b) => {
+    if (b.parentElement.querySelector('[data-vcf]')) return;
+    const n = document.createElement('button'); n.className = 'vtp-btn small'; n.dataset.vcf = b.dataset.copyProjectReview; n.textContent = 'Client feedback'; b.after(n);
+  });
+  new MutationObserver(inject).observe(document.body, {childList: true, subtree: true}); inject();
+  const close = () => document.getElementById('vcf-modal')?.remove();
+  async function open(id) {
+    close();
+    const m = document.createElement('div'); m.id = 'vcf-modal'; m.innerHTML = '<div class="vcf-card" role="dialog" aria-label="Client feedback"><div class="vcf-load">Loading…</div></div>';
+    m.addEventListener('click', (e) => { if (e.target === m || e.target.closest('[data-vcf-close]')) close(); }); document.body.appendChild(m);
+    const card = m.firstChild;
+    try {
+      const r = await fetch(VTP.root + `projects/${id}/client-feedback`, {headers: {'X-WP-Nonce': VTP.nonce}, credentials: 'same-origin', cache: 'no-store'});
+      const d = await r.json(); if (!r.ok) throw new Error(d.message || 'Could not load feedback.');
+      const label = {pending: 'Waiting', commented: 'Comment sent', approved: 'Approved'};
+      const status = d.status === 'complete' ? 'All approved · download link sent' : d.status === 'finalizing' ? 'Preparing download link…' : 'In review';
+      card.innerHTML = `<header><div><h3>Client feedback</h3><p>${esc(status)}</p></div><button class="vcf-x" data-vcf-close aria-label="Close">×</button></header>
+        <div class="vcf-sec"><b>Items</b>${d.items.length ? d.items.map((i) => `<div class="vcf-row"><span>${esc(i.title)}<small>${esc(i.number || '')}</small></span><em class="vcf-${esc(i.state)}">${label[i.state] || i.state}${i.approved_by ? ' · ' + esc(i.approved_by) : ''}${i.approved_at ? ' · ' + esc(when(i.approved_at)) : ''}</em></div>`).join('') : '<p class="vcf-mut">No approved deliverables are visible to the client yet.</p>'}${d.waiting ? `<p class="vcf-mut">${d.waiting} item(s) not yet approved by you, so hidden from the client.</p>` : ''}</div>
+        <div class="vcf-sec"><b>Comments (only you can see these)</b>${d.comments.length ? d.comments.map((c) => `<div class="vcf-cm"><small>${esc(c.title)} · ${esc(c.author)} · ${esc(when(c.created_at))}</small><p>${esc(c.message)}</p></div>`).join('') : '<p class="vcf-mut">No comments yet.</p>'}</div>
+        <footer>${d.page ? `<a class="vtp-btn small" href="${esc(d.page)}" target="_blank" rel="noopener">Open client page</a>` : ''}${d.download_url ? `<a class="vtp-btn small primary" href="${esc(d.download_url)}" target="_blank" rel="noopener">Client download folder</a>` : ''}</footer>`;
+    } catch (err) { card.innerHTML = `<header><h3>Client feedback</h3><button class="vcf-x" data-vcf-close>×</button></header><p class="vcf-mut">${esc(err.message)}</p>`; }
+  }
+  document.addEventListener('click', (e) => { const b = e.target.closest('[data-vcf]'); if (b) { e.preventDefault(); open(b.dataset.vcf); } });
+})();

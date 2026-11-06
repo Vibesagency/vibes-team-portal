@@ -34,7 +34,7 @@ final class VPM_UI {
 
     public static function enqueue(): void {
         if (!is_page('team-portal') || !is_user_logged_in()) return;
-        $asset_version = '0.5.2-connect2';
+        $asset_version = '0.5.3-connect2';
         wp_enqueue_style('vpm-modules', VPM_URL . 'assets/modules.css', [], $asset_version);
         wp_enqueue_script('vpm-modules', VPM_URL . 'assets/modules.js', [], $asset_version, true);
         wp_localize_script('vpm-modules', 'VPM', [

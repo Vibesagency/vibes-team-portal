@@ -94,6 +94,7 @@ final class VPM_ClientPortal {
         register_rest_route(self::NS, "/public/projects/{$tok}/items/(?P<task>\\d+)/approve", ['methods' => 'POST', 'callback' => [self::class, 'api_approve'], 'permission_callback' => $pub]);
         register_rest_route(self::NS, "/public/projects/{$tok}/items/(?P<task>\\d+)/undo", ['methods' => 'POST', 'callback' => [self::class, 'api_undo'], 'permission_callback' => $pub]);
         register_rest_route(self::NS, "/public/projects/{$tok}/items/(?P<task>\\d+)/comment", ['methods' => 'POST', 'callback' => [self::class, 'api_comment'], 'permission_callback' => $pub]);
+        register_rest_route(self::NS, '/client-reviews', ['methods' => 'GET', 'callback' => [self::class, 'api_reviews'], 'permission_callback' => static function () { return current_user_can('vtp_manage_projects') || current_user_can('manage_options'); }]);
         register_rest_route(self::NS, '/projects/(?P<id>\\d+)/client-feedback', ['methods' => 'GET', 'callback' => [self::class, 'api_feedback'], 'permission_callback' => static function () { return current_user_can('vtp_manage_projects') || current_user_can('manage_options'); }]);
     }
 
@@ -396,6 +397,25 @@ final class VPM_ClientPortal {
         foreach ($rows as &$c) { $c['task_id'] = (int) $c['task_id']; $c['title'] = $titles[$c['task_id']] ?? 'Deliverable'; }
         $st = $b['state'];
         return rest_ensure_response(['status' => $st['status'] ?? 'open', 'download_url' => $st['url'] ?? '', 'waiting' => $b['waiting'], 'items' => $items, 'comments' => $rows, 'page' => $project['client_review_token'] ? add_query_arg('token', $project['client_review_token'], home_url('/project-review/')) : '']);
+    }
+
+    public static function api_reviews(WP_REST_Request $r) {
+        global $wpdb;
+        $projects = $wpdb->get_results('SELECT p.id, p.name, p.client, p.client_review_token, p.client_review_status, p.client_review_month, p.client_review_at, p.drive_client_url, q.email AS client_email FROM ' . self::t('projects') . ' p LEFT JOIN ' . self::t('quotations') . ' q ON q.id=p.quotation_id WHERE p.archived_at IS NULL ORDER BY p.id DESC LIMIT 200', ARRAY_A) ?: [];
+        $out = [];
+        foreach ($projects as $p) {
+            $pid = (int) $p['id']; $tok = (string) $p['client_review_token'];
+            $tasks = self::cycle_tasks($p);
+            $done = 0; foreach ($tasks as $t) if ($t['status'] === 'done') $done++;
+            $rows = self::item_rows($pid); $approved = 0; $last = '';
+            foreach ($rows as $row) { if ($row['state'] === 'approved') $approved++; if (!empty($row['approved_at']) && $row['approved_at'] > $last) $last = $row['approved_at']; }
+            $cm = $wpdb->get_row($wpdb->prepare('SELECT COUNT(*) n, MAX(created_at) at FROM ' . self::t('client_comments') . ' WHERE project_id=%d', $pid), ARRAY_A);
+            if (!empty($cm['at']) && $cm['at'] > $last) $last = $cm['at'];
+            $st = get_option('vcr_state_' . $pid, []); $sst = $st['status'] ?? 'open';
+            $status = !$tok ? 'not_sent' : ($sst === 'complete' ? 'complete' : ($sst === 'finalizing' ? 'finalizing' : 'in_review'));
+            $out[] = ['id' => $pid, 'name' => $p['name'], 'client' => $p['client'], 'email' => (string) $p['client_email'], 'status' => $status, 'total' => count($tasks), 'ready' => $done, 'approved' => $approved, 'comments' => (int) ($cm['n'] ?? 0), 'last' => $last ?: (string) $p['client_review_at'], 'sent_at' => (string) $p['client_review_at'], 'page' => $tok ? add_query_arg('token', $tok, home_url('/project-review/')) : '', 'download_url' => $sst === 'complete' ? (string) ($st['url'] ?? '') : ''];
+        }
+        return rest_ensure_response(['projects' => $out]);
     }
 
     /* ---------- the public page ---------- */

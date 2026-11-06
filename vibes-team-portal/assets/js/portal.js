@@ -260,7 +260,7 @@
   async function route() {
     const key = (location.hash || '#dashboard').slice(1).split('?')[0];
     document.querySelectorAll('#vtp-nav a').forEach(link => link.classList.toggle('active', link.dataset.route === key));
-	      const moduleRoutes = ['connect', 'finance', 'crm', 'payslips']; if (moduleRoutes.includes(key)) return;
+	      const moduleRoutes = ['connect', 'finance', 'crm', 'payslips', 'client-reviews']; if (moduleRoutes.includes(key)) return;
     // The portfolio/content-management routes are rendered by the dedicated
     // work-library script. The portal shell must leave those views alone;
     // otherwise its dashboard fallback wins the race and replaces the editor.

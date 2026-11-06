@@ -1575,3 +1575,66 @@ async function renderCRM() {
   }
   document.addEventListener('click', (e) => { const b = e.target.closest('[data-vcf]'); if (b) { e.preventDefault(); open(b.dataset.vcf); } });
 })();
+
+
+/* Client Reviews: admin page listing every project's client review, approvals and comments */
+(() => {
+  if (window.__vclInstalled) return; window.__vclInstalled = true;
+  const ROUTE = 'client-reviews';
+  const esc = (v) => String(v ?? '').replace(/[&<>'"]/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
+  const route = () => (location.hash || '#dashboard').slice(1).split('?')[0];
+  const ago = (s) => { if (!s) return '—'; const d = new Date(String(s).replace(' ', 'T')); if (isNaN(d)) return '—'; const m = Math.round((Date.now() - d) / 60000); if (m < 1) return 'just now'; if (m < 60) return m + ' min ago'; if (m < 1440) return Math.round(m / 60) + ' h ago'; if (m < 43200) return Math.round(m / 1440) + ' d ago'; return d.toLocaleDateString('en-GB', {day: 'numeric', month: 'short', year: 'numeric'}); };
+  const LABEL = {not_sent: 'Not sent yet', in_review: 'In review', finalizing: 'Preparing download', complete: 'Approved · delivered'};
+  let filter = 'all', data = [], token = 0;
+  const icon = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5h14v10H9l-4 4Z"></path><path d="m9 10 2 2 4-4"></path></svg>';
+
+  function installNav() {
+    const nav = document.getElementById('vtp-nav'); if (!nav || nav.querySelector('[data-route="' + ROUTE + '"]')) return;
+    const group = nav.querySelector('[data-nav-group="sales"]'); if (!group || !group.querySelector('a')) return;
+    const a = document.createElement('a'); a.href = '#' + ROUTE; a.dataset.route = ROUTE;
+    a.innerHTML = '<i aria-hidden="true">' + icon + '</i><span>Client Reviews</span><b class="vcl-dot" id="vcl-dot" hidden></b>'; group.appendChild(a);
+    if (route() === ROUTE) a.classList.add('active');
+  }
+
+  function view() {
+    const list = data.filter((p) => filter === 'all' || (filter === 'in_review' ? ['in_review', 'finalizing'].includes(p.status) : p.status === filter));
+    const n = (s) => data.filter((p) => s.includes(p.status)).length;
+    const comments = data.reduce((t, p) => t + p.comments, 0);
+    const chip = (k, l, c) => `<button class="vcl-chip${filter === k ? ' on' : ''}" data-vcl-filter="${k}">${l}<em>${c}</em></button>`;
+    const card = (p) => {
+      const pct = p.ready ? Math.round(p.approved / p.ready * 100) : 0;
+      const sub = p.status === 'not_sent' ? (p.ready ? `${p.ready} of ${p.total} deliverables ready. Send the review link from the project card.` : `${p.total ? p.total + ' tasks in progress' : 'No tasks yet'}. Deliverables appear here once the admin approves them.`) : `${p.approved} of ${p.ready} approved${p.total > p.ready ? ' · ' + (p.total - p.ready) + ' still in progress' : ''}`;
+      return `<article class="vcl-card vcl-${esc(p.status)}"><div class="vcl-main"><div class="vcl-title"><h3>${esc(p.name)}</h3><span class="vcl-badge">${esc(LABEL[p.status] || p.status)}</span></div>
+        <p class="vcl-client">${esc(p.client || 'No client')}${p.email ? ' · ' + esc(p.email) : ''}</p>
+        ${p.status === 'not_sent' ? '' : `<div class="vcl-bar"><i style="width:${pct}%"></i></div>`}<p class="vcl-sub">${esc(sub)}</p></div>
+        <div class="vcl-meta"><span><b>${p.comments}</b>comment${p.comments === 1 ? '' : 's'}</span><span><b>${esc(ago(p.last))}</b>last activity</span></div>
+        <div class="vcl-act">${p.status === 'not_sent' ? '<a class="vtp-btn small" href="#projects" data-route="projects">Open projects</a>' : `<button class="vtp-btn small primary" data-vcf="${p.id}">View feedback</button><a class="vtp-btn small" href="${esc(p.page)}" target="_blank" rel="noopener">Client page</a>${p.download_url ? `<a class="vtp-btn small" href="${esc(p.download_url)}" target="_blank" rel="noopener">Download folder</a>` : ''}`}</div></article>`;
+    };
+    const empty = `<div class="vcl-empty"><h3>No client reviews yet</h3><p>This is where you follow what clients think of their work.</p><ol><li>Employees finish tasks and the admin approves each delivery.</li><li>On the project card, click <b>Send client review</b>. The client gets a private link with no password.</li><li>The client sees all work on the page, comments (only you see them) and approves each item.</li><li>When every item is approved, the Drive download link is emailed to the client automatically.</li></ol></div>`;
+    return `<section class="vtp-page vcl-page"><header class="vcl-head"><div><p class="vcl-eye">SALES &amp; CLIENTS</p><h1>Client Reviews</h1><p>Every project's client review: what is waiting, what is approved, and what the client wrote.</p></div></header>
+      <div class="vcl-stats"><div><small>In review</small><strong>${n(['in_review', 'finalizing'])}</strong></div><div><small>Delivered</small><strong>${n(['complete'])}</strong></div><div><small>Not sent yet</small><strong>${n(['not_sent'])}</strong></div><div><small>Client comments</small><strong>${comments}</strong></div></div>
+      <div class="vcl-chips">${chip('all', 'All', data.length)}${chip('in_review', 'In review', n(['in_review', 'finalizing']))}${chip('complete', 'Delivered', n(['complete']))}${chip('not_sent', 'Not sent', n(['not_sent']))}</div>
+      <div class="vcl-list">${!data.length ? empty : list.length ? list.map(card).join('') : '<div class="vcl-empty"><p>Nothing in this filter.</p></div>'}</div></section>`;
+  }
+
+  async function render() {
+    const el = document.getElementById('vtp-view'); if (!el || route() !== ROUTE) return;
+    const t = ++token;
+    if (!el.querySelector('.vcl-page')) el.innerHTML = '<section class="vtp-page vcl-page"><div class="vcl-load">Loading client reviews…</div></section>';
+    document.querySelectorAll('#vtp-nav a').forEach((l) => l.classList.toggle('active', l.dataset.route === ROUTE));
+    try {
+      const r = await fetch(VTP.root + 'client-reviews', {headers: {'X-WP-Nonce': VTP.nonce}, credentials: 'same-origin', cache: 'no-store'});
+      const d = await r.json(); if (!r.ok) throw new Error(d.message || 'Could not load client reviews.');
+      if (t !== token || route() !== ROUTE) return; data = d.projects || []; el.innerHTML = view();
+    } catch (e) { if (t === token) el.innerHTML = `<section class="vtp-page vcl-page"><div class="vcl-empty"><p>${esc(e.message)}</p></div></section>`; }
+  }
+
+  document.addEventListener('click', (e) => { const c = e.target.closest('[data-vcl-filter]'); if (!c) return; filter = c.dataset.vclFilter; const el = document.getElementById('vtp-view'); if (el) el.innerHTML = view(); });
+  window.__vclRender = render;
+  const kick = () => { installNav(); if (route() === ROUTE) { const el = document.getElementById('vtp-view'); if (el && !el.querySelector('.vcl-page')) render(); } };
+  window.addEventListener('hashchange', () => { installNav(); if (route() === ROUTE) render(); });
+  new MutationObserver(() => installNav()).observe(document.body, {childList: true, subtree: true});
+  [0, 500, 1400, 3000].forEach((ms) => setTimeout(kick, ms)); kick();
+})();
+/* Client Reviews: route watcher (router uses pushState, no hashchange) */
+(() => { let last = ''; setInterval(() => { const r = (location.hash || '').slice(1).split('?')[0]; const el = document.getElementById('vtp-view'); if (r === 'client-reviews' && el && !el.querySelector('.vcl-page') && window.__vclRender) window.__vclRender(); last = r; }, 400); })();

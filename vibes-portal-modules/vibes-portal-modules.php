@@ -94,6 +94,7 @@ final class VPM_ClientPortal {
         register_rest_route(self::NS, "/public/projects/{$tok}/items/(?P<task>\\d+)/approve", ['methods' => 'POST', 'callback' => [self::class, 'api_approve'], 'permission_callback' => $pub]);
         register_rest_route(self::NS, "/public/projects/{$tok}/items/(?P<task>\\d+)/undo", ['methods' => 'POST', 'callback' => [self::class, 'api_undo'], 'permission_callback' => $pub]);
         register_rest_route(self::NS, "/public/projects/{$tok}/items/(?P<task>\\d+)/comment", ['methods' => 'POST', 'callback' => [self::class, 'api_comment'], 'permission_callback' => $pub]);
+        register_rest_route(self::NS, "/public/projects/{$tok}/items/(?P<task>\\d+)/changes", ['methods' => 'POST', 'callback' => [self::class, 'api_changes'], 'permission_callback' => $pub]);
         register_rest_route(self::NS, '/client-reviews', ['methods' => 'GET', 'callback' => [self::class, 'api_reviews'], 'permission_callback' => static function () { return current_user_can('vtp_manage_projects') || current_user_can('manage_options'); }]);
         register_rest_route(self::NS, '/projects/(?P<id>\\d+)/client-feedback', ['methods' => 'GET', 'callback' => [self::class, 'api_feedback'], 'permission_callback' => static function () { return current_user_can('vtp_manage_projects') || current_user_can('manage_options'); }]);
     }
@@ -277,6 +278,35 @@ final class VPM_ClientPortal {
         return rest_ensure_response(['success' => true]);
     }
 
+    /** Client asks for changes on one item: send it back to the team, move its Drive folder back to Working. */
+    public static function api_changes(WP_REST_Request $r) {
+        $g = self::guard_item($r); if (is_wp_error($g)) return $g;
+        [$project, , $item] = $g;
+        $name = self::name_of($r);
+        $message = trim(sanitize_textarea_field((string) $r['message']));
+        if (!$name) return new WP_Error('missing_name', 'Please enter your name first.', ['status' => 400]);
+        if (!$message) return new WP_Error('missing_message', 'Please describe the changes you would like.', ['status' => 400]);
+        $message = mb_substr($message, 0, 3000);
+        $rl = 'vcr_rl_' . md5((string) $r['token']);
+        $n = (int) get_transient($rl); if ($n >= 30) return new WP_Error('slow_down', 'Too many requests. Please try again later.', ['status' => 429]);
+        set_transient($rl, $n + 1, HOUR_IN_SECONDS);
+        global $wpdb; $now = current_time('mysql'); $pid = (int) $project['id']; $tid = (int) $item['id'];
+        $wpdb->insert(self::t('client_comments'), ['project_id' => $pid, 'task_id' => $tid, 'author' => $name, 'message' => 'CHANGES REQUESTED: ' . $message, 'created_at' => $now]);
+        $wpdb->query($wpdb->prepare('INSERT INTO ' . self::t('client_items') . " (project_id,task_id,state,approved_by,approved_at,updated_at) VALUES (%d,%d,'pending','',NULL,%s) ON DUPLICATE KEY UPDATE state='pending', approved_by='', approved_at=NULL, updated_at=VALUES(updated_at)", $pid, $tid, $now));
+        $task = $wpdb->get_row($wpdb->prepare('SELECT assignee_id FROM ' . self::t('tasks') . ' WHERE id=%d', $tid), ARRAY_A);
+        $wpdb->update(self::t('tasks'), ['status' => 'in_progress', 'completed_at' => null, 'updated_at' => $now], ['id' => $tid]);
+        $total = (int) $wpdb->get_var($wpdb->prepare('SELECT COUNT(*) FROM ' . self::t('tasks') . ' WHERE project_id=%d', $pid));
+        $sub = (int) $wpdb->get_var($wpdb->prepare("SELECT COUNT(*) FROM " . self::t('tasks') . " WHERE project_id=%d AND status IN ('review','done')", $pid));
+        $wpdb->update(self::t('projects'), ['status' => 'active', 'progress' => $total ? min(100, (int) round($sub / $total * 100)) : 0, 'updated_at' => $now], ['id' => $pid]);
+        if (function_exists('vibes_drive_review_sync')) { $res = vibes_drive_review_sync(['project_id' => $pid, 'task_id' => $tid], 'revision'); if (is_wp_error($res)) error_log('[vibes] revision drive move failed: ' . $res->get_error_message()); }
+        $title = 'Changes requested · ' . $project['name'];
+        $body = $name . ' on "' . $item['title'] . '": ' . mb_substr($message, 0, 240);
+        self::notify('', 'client_changes', $title, $body, $pid);
+        if (!empty($task['assignee_id'])) $wpdb->insert(self::t('notifications'), ['user_id' => (int) $task['assignee_id'], 'type' => 'client_changes', 'title' => $title, 'body' => $body, 'object_type' => 'task', 'object_id' => $tid, 'created_at' => $now]);
+        wp_mail(['info@vibesagency.co', 'info@solaraevents.net'], 'Client requested changes — ' . $project['name'], "Client: {$name}\nProject: {$project['name']}\nItem: {$item['title']}\n\n{$message}\n\nThe task is back In progress and its Drive folder is back in 01 - Working.", ['From: Vibes Agency <admin@vibesagency.co>']);
+        return rest_ensure_response(['success' => true]);
+    }
+
     private static function notify(string $unused, string $type, string $title, string $body, int $pid): void {
         global $wpdb;
         foreach (get_users(['role' => 'administrator', 'fields' => 'ID']) as $uid) {
@@ -413,7 +443,7 @@ final class VPM_ClientPortal {
             if (!empty($cm['at']) && $cm['at'] > $last) $last = $cm['at'];
             $st = get_option('vcr_state_' . $pid, []); $sst = $st['status'] ?? 'open';
             $status = !$tok ? 'not_sent' : ($sst === 'complete' ? 'complete' : ($sst === 'finalizing' ? 'finalizing' : 'in_review'));
-            $out[] = ['id' => $pid, 'name' => $p['name'], 'client' => $p['client'], 'email' => (string) $p['client_email'], 'status' => $status, 'total' => count($tasks), 'ready' => $done, 'approved' => $approved, 'comments' => (int) ($cm['n'] ?? 0), 'last' => $last ?: (string) $p['client_review_at'], 'sent_at' => (string) $p['client_review_at'], 'page' => $tok ? add_query_arg('token', $tok, home_url('/project-review/')) : '', 'download_url' => $sst === 'complete' ? (string) ($st['url'] ?? '') : ''];
+            $out[] = ['id' => $pid, 'name' => $p['name'], 'client' => $p['client'], 'email' => (string) $p['client_email'], 'status' => $status, 'total' => count($tasks), 'ready' => $done, 'approved' => $approved, 'comments' => (int) ($cm['n'] ?? 0), 'last' => $last ?: (string) $p['client_review_at'], 'last_ts' => ($last ?: (string) $p['client_review_at']) ? (int) strtotime(get_gmt_from_date($last ?: (string) $p['client_review_at'])) : 0, 'sent_at' => (string) $p['client_review_at'], 'page' => $tok ? add_query_arg('token', $tok, home_url('/project-review/')) : '', 'download_url' => $sst === 'complete' ? (string) ($st['url'] ?? '') : ''];
         }
         return rest_ensure_response(['projects' => $out]);
     }
@@ -489,7 +519,7 @@ return `<a class="vcr-file" href="${u}?dl=1"><b>${esc(f.name)}</b><small>${bytes
 const locked=()=>data&&data.status!=='open';
 function actions(i){if(i.state==='approved')return `<span class="vcr-okmsg">✓ Approved${i.approved_by?' by '+esc(i.approved_by):''}</span>${locked()?'':'<button class="vcr-link" data-undo>Undo</button>'}`;
 if(locked())return '';
-return `<button class="vcr-btn pri" data-approve>Approve</button><button class="vcr-btn" data-cm>Add a comment</button>${i.sent?'<span class="vcr-sent">Comment sent to Vibes ✓</span>':''}<div class="vcr-cm" hidden><textarea placeholder="Tell us what you would like changed or add a note…" maxlength="3000"></textarea><div><button class="vcr-btn" data-cancel>Cancel</button><button class="vcr-btn pri" data-send>Send comment</button></div></div>`}
+return `<button class="vcr-btn pri" data-approve>Approve</button><button class="vcr-btn" data-cm>Add a comment</button><button class="vcr-btn" data-chg>Request changes</button>${i.sent?'<span class="vcr-sent">Comment sent to Vibes ✓</span>':''}<div class="vcr-cm" hidden><textarea placeholder="Tell us what you would like changed or add a note…" maxlength="3000"></textarea><div><button class="vcr-btn" data-cancel>Cancel</button><button class="vcr-btn pri" data-send>Send comment</button></div></div>`}
 function card(i){return `<article class="vcr-item ${i.state==='approved'?'is-ok':''}" data-id="${i.id}"><div class="vcr-head"><div><small>${esc(i.label||'Deliverable')}${i.number?' · '+esc(i.number):''}</small><h2>${esc(i.title)}</h2></div><span class="vcr-badge">${i.state==='approved'?'Approved':'Awaiting your approval'}</span></div>${i.note?`<div class="vcr-note">${esc(i.note)}</div>`:''}${i.files.length?`<div class="vcr-media">${i.files.map(media).join('')}</div>`:'<div class="vcr-empty">Files for this item will appear here shortly.</div>'}<div class="vcr-act">${actions(i)}</div></article>`}
 function top(){const total=data.items.length,pct=total?Math.round(data.approved/total*100):0;let done='';
 if(data.status==='complete')done=`<div class="vcr-done"><h2>All approved — thank you!</h2><p>Your complete work is ready. We also emailed you this link.</p>${data.download_url?`<a class="vcr-dl" href="${esc(data.download_url)}" target="_blank" rel="noopener">⬇ Download all my work</a>`:'<p>Vibes Agency will send your download link shortly.</p>'}</div>`;
@@ -502,12 +532,12 @@ const need=()=>{const el=document.getElementById('vcr-name');const v=(el?el.valu
 app.addEventListener('click',async e=>{const lb=e.target.closest('[data-lb]');if(lb){const o=document.createElement('div');o.className='vcr-lb';o.innerHTML=`<img src="${esc(lb.dataset.lb)}" alt="">`;o.onclick=()=>o.remove();document.body.appendChild(o);return}
 const card=e.target.closest('.vcr-item');if(!card)return;const item=data.items.find(i=>String(i.id)===card.dataset.id);const btn=e.target.closest('button');if(!btn||!item)return;
 const cm=card.querySelector('.vcr-cm');
-if(btn.hasAttribute('data-cm')){cm.hidden=false;cm.querySelector('textarea').focus();btn.hidden=true;return}
-if(btn.hasAttribute('data-cancel')){cm.hidden=true;card.querySelector('[data-cm]').hidden=false;return}
+if(btn.hasAttribute('data-cm')||btn.hasAttribute('data-chg')){const ch=btn.hasAttribute('data-chg');cm.dataset.mode=ch?'changes':'comment';const ta=cm.querySelector('textarea');ta.placeholder=ch?'Describe exactly what you would like us to change…':'Add a note for the team…';cm.querySelector('[data-send]').textContent=ch?'Send change request':'Send comment';cm.hidden=false;ta.focus();card.querySelectorAll('[data-cm],[data-chg]').forEach(x=>x.hidden=true);return}
+if(btn.hasAttribute('data-cancel')){cm.hidden=true;card.querySelectorAll('[data-cm],[data-chg]').forEach(x=>x.hidden=false);return}
 try{
 if(btn.hasAttribute('data-approve')){const n=need();if(!n)return;btn.disabled=true;const r=await call(`items/${item.id}/approve`,'POST',{name:n});item.state='approved';item.approved_by=n;data.approved=r.approved;if(r.all_approved){data.status='finalizing'}refreshState();if(!r.all_approved)toast('Approved ✓')}
 else if(btn.hasAttribute('data-undo')){btn.disabled=true;const r=await call(`items/${item.id}/undo`,'POST',{});item.state='pending';data.approved=r.approved;refreshState()}
-else if(btn.hasAttribute('data-send')){const n=need();if(!n)return;const t=cm.querySelector('textarea').value.trim();if(!t){toast('Write your comment first.');return}btn.disabled=true;await call(`items/${item.id}/comment`,'POST',{name:n,message:t});item.sent=true;refreshState();toast('Comment sent to Vibes ✓')}
+else if(btn.hasAttribute('data-send')){const n=need();if(!n)return;const t=cm.querySelector('textarea').value.trim();if(!t){toast('Write your comment first.');return}btn.disabled=true;if(cm.dataset.mode==='changes'){await call(`items/${item.id}/changes`,'POST',{name:n,message:t});data.items=data.items.filter(x=>x.id!==item.id);data.waiting=(data.waiting||0)+1;render();toast('Change request sent — we will update this item')}else{await call(`items/${item.id}/comment`,'POST',{name:n,message:t});item.sent=true;refreshState();toast('Comment sent to Vibes ✓')}}
 }catch(err){toast(err.message);btn.disabled=false}});
 (async()=>{try{if(!/^[a-f0-9]{64}$/.test(token))throw new Error('This link is not valid. Please use the link from your email.');data=await call('portal');render();schedule()}catch(e){app.innerHTML=`<div class="vcr-err"><h1>Link unavailable</h1><p>${esc(e.message)}</p><p><a href="https://vibesagency.co/contact-creative-agency">Contact Vibes Agency</a></p></div>`}})();
 })();

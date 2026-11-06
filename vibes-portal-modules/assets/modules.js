@@ -1584,7 +1584,7 @@ async function renderCRM() {
   const ROUTE = 'client-reviews';
   const esc = (v) => String(v ?? '').replace(/[&<>'"]/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
   const route = () => (location.hash || '#dashboard').slice(1).split('?')[0];
-  const ago = (s) => { if (!s) return '—'; const d = new Date(String(s).replace(' ', 'T')); if (isNaN(d)) return '—'; const m = Math.round((Date.now() - d) / 60000); if (m < 1) return 'just now'; if (m < 60) return m + ' min ago'; if (m < 1440) return Math.round(m / 60) + ' h ago'; if (m < 43200) return Math.round(m / 1440) + ' d ago'; return d.toLocaleDateString('en-GB', {day: 'numeric', month: 'short', year: 'numeric'}); };
+  const ago = (s) => { if (!s) return '—'; const d = typeof s === 'number' ? new Date(s) : new Date(String(s).replace(' ', 'T')); if (isNaN(d)) return '—'; const m = Math.round((Date.now() - d) / 60000); if (m < 1) return 'just now'; if (m < 60) return m + ' min ago'; if (m < 1440) return Math.round(m / 60) + ' h ago'; if (m < 43200) return Math.round(m / 1440) + ' d ago'; return d.toLocaleDateString('en-GB', {day: 'numeric', month: 'short', year: 'numeric'}); };
   const LABEL = {not_sent: 'Not sent yet', in_review: 'In review', finalizing: 'Preparing download', complete: 'Approved · delivered'};
   let filter = 'all', data = [], token = 0;
   const icon = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5h14v10H9l-4 4Z"></path><path d="m9 10 2 2 4-4"></path></svg>';
@@ -1608,7 +1608,7 @@ async function renderCRM() {
       return `<article class="vcl-card vcl-${esc(p.status)}"><div class="vcl-main"><div class="vcl-title"><h3>${esc(p.name)}</h3><span class="vcl-badge">${esc(LABEL[p.status] || p.status)}</span></div>
         <p class="vcl-client">${esc(p.client || 'No client')}${p.email ? ' · ' + esc(p.email) : ''}</p>
         ${p.status === 'not_sent' ? '' : `<div class="vcl-bar"><i style="width:${pct}%"></i></div>`}<p class="vcl-sub">${esc(sub)}</p></div>
-        <div class="vcl-meta"><span><b>${p.comments}</b>comment${p.comments === 1 ? '' : 's'}</span><span><b>${esc(ago(p.last))}</b>last activity</span></div>
+        <div class="vcl-meta"><span><b>${p.comments}</b>comment${p.comments === 1 ? '' : 's'}</span><span><b>${esc(ago(p.last_ts ? p.last_ts * 1000 : p.last))}</b>last activity</span></div>
         <div class="vcl-act">${p.status === 'not_sent' ? '<a class="vtp-btn small" href="#projects" data-route="projects">Open projects</a>' : `<button class="vtp-btn small primary" data-vcf="${p.id}">View feedback</button><a class="vtp-btn small" href="${esc(p.page)}" target="_blank" rel="noopener">Client page</a>${p.download_url ? `<a class="vtp-btn small" href="${esc(p.download_url)}" target="_blank" rel="noopener">Download folder</a>` : ''}`}</div></article>`;
     };
     const empty = `<div class="vcl-empty"><h3>No client reviews yet</h3><p>This is where you follow what clients think of their work.</p><ol><li>Employees finish tasks and the admin approves each delivery.</li><li>On the project card, click <b>Send client review</b>. The client gets a private link with no password.</li><li>The client sees all work on the page, comments (only you see them) and approves each item.</li><li>When every item is approved, the Drive download link is emailed to the client automatically.</li></ol></div>`;

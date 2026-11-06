@@ -528,3 +528,11 @@ label.vcx-field input:focus{outline:none;border-color:#c9b3e6;background:#fff;bo
 #vcx-root .vcx-quote b{font-size:12px!important;line-height:1.3!important}
 #vcx-root .vcx-quote span{font-size:12.5px!important;line-height:1.35!important}
 #vcx-root #vcx-input,#vcx-root #vcx-input:focus{outline:none!important;box-shadow:none!important;border:0!important}
+
+/* Connect v2 polish 2: people-list avatars + sheet buttons */
+#vcx-root .vcx-people .vcx-av{flex:0 0 40px!important;width:40px!important;height:40px!important;min-width:40px;max-width:40px;font-size:13px}
+#vcx-root .vcx-people>*>span:not(.vcx-av){flex:1 1 auto;min-width:0}
+#vcx-root .vcx-btn,#vcx-root .vcx-sheet button.vcx-btn{font-size:14.5px!important;line-height:1.2!important;font-weight:700!important;letter-spacing:0!important;text-transform:none!important;min-height:44px;padding:0 20px;box-shadow:none}
+#vcx-root .vcx-btn.vcx-primary,#vcx-root .vcx-btn.primary{background:#60338d;color:#fff;border-color:#60338d!important}
+#vcx-root .vcx-btn.danger{color:#c2410c}
+#vcx-root .vcx-btn.vcx-primary.danger{background:#c2410c;color:#fff}

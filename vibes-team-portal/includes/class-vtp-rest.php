@@ -267,6 +267,12 @@ class VTP_REST {
             $payload['phone'] = (string) get_user_meta($user->ID, 'vtp_phone', true);
             $payload['dateJoining'] = (string) get_user_meta($user->ID, 'vtp_date_joining', true);
             $payload['dateBirth'] = (string) get_user_meta($user->ID, 'vtp_date_birth', true);
+            $payload['personalEmail'] = (string) get_user_meta($user->ID, 'vtp_personal_email', true);
+            $payload['maritalStatus'] = (string) get_user_meta($user->ID, 'vtp_marital_status', true);
+            $payload['emergencyName'] = (string) get_user_meta($user->ID, 'vtp_emergency_name', true);
+            $payload['emergencyPhone'] = (string) get_user_meta($user->ID, 'vtp_emergency_phone', true);
+            $payload['emergencyRelation'] = (string) get_user_meta($user->ID, 'vtp_emergency_relation', true);
+            $payload['address'] = (string) get_user_meta($user->ID, 'vtp_address', true);
             $payload['skills'] = (string) get_user_meta($user->ID, 'vtp_skills', true);
             $payload['audit'] = array_slice((array) get_user_meta($user->ID, 'vtp_employee_audit', true), 0, 8);
             $summary = ['total' => 0, 'todo' => 0, 'in_progress' => 0, 'review' => 0, 'done' => 0];
@@ -1414,6 +1420,7 @@ class VTP_REST {
         if (!self::valid_date($date_joining) || !self::valid_date($date_birth)) return new WP_Error('invalid_dates', 'Choose valid joining and birth dates.', ['status' => 400]);
         if (!str_ends_with(strtolower($email), '@vibesagency.co')) return new WP_Error('invalid_domain', 'Use a @vibesagency.co work email.', ['status' => 400]);
         if (email_exists($email)) return new WP_Error('email_exists', 'An account already uses this email.', ['status' => 409]);
+        $extra = self::extra_details_clean($request); if (is_wp_error($extra)) return $extra;
         $password = wp_generate_password(14, true, false);
         $base = sanitize_user(strstr($email, '@', true), true);
         $username = $base;
@@ -1427,6 +1434,7 @@ class VTP_REST {
         update_user_meta($id, 'vtp_phone', $phone);
         update_user_meta($id, 'vtp_date_joining', $date_joining);
         update_user_meta($id, 'vtp_date_birth', $date_birth);
+        self::extra_details_store((int) $id, $extra);
         update_user_meta($id, 'vtp_availability', 'available');
         update_user_meta($id, 'vtp_skills', sanitize_textarea_field((string) $request['skills']));
         update_user_meta($id, 'vtp_employee_audit', [['at' => current_time('mysql'), 'by' => get_current_user_id(), 'action' => 'created', 'summary' => 'Employee account created']]);
@@ -1468,9 +1476,11 @@ class VTP_REST {
         if ($id === get_current_user_id() && !$active) return new WP_Error('self_disable', 'You cannot disable your own account.', ['status' => 400]);
 
         $before = self::user_payload($user);
+        $extra = self::extra_details_clean($request); if (is_wp_error($extra)) return $extra;
         wp_update_user(['ID' => $id, 'display_name' => $name]);
         foreach (['vtp_position' => $position, 'vtp_department' => $department, 'vtp_phone' => $phone, 'vtp_availability' => $availability, 'vtp_skills' => $skills] as $key => $value) update_user_meta($id, $key, $value);
         update_user_meta($id, 'vtp_salary_amount', $salary_amount);
+        self::extra_details_store($id, $extra);
         update_user_meta($id, 'vtp_salary_currency', $salary_currency);
         update_user_meta($id, 'vtp_employment_status', $manager_profile ? 'permanent' : $employment_status);
         if (!user_can($id, 'administrator')) {
@@ -1957,6 +1967,29 @@ class VTP_REST {
         return rest_ensure_response($rows);
     }
 
+    /** Optional personal details: validated only when the field is sent. */
+    private static function extra_details_clean(WP_REST_Request $r) {
+        $out = [];
+        if ($r->has_param('personalEmail')) {
+            $raw = trim((string) $r['personalEmail']); $e = sanitize_email($raw);
+            if ($raw !== '' && !$e) return new WP_Error('invalid_personal_email', 'Enter a valid personal email address.', ['status' => 400]);
+            $out['vtp_personal_email'] = $e;
+        }
+        if ($r->has_param('maritalStatus')) {
+            $m = sanitize_key((string) $r['maritalStatus']);
+            if ($m !== '' && !in_array($m, ['single', 'married', 'divorced', 'widowed', 'prefer_not_to_say'], true)) return new WP_Error('invalid_marital_status', 'Choose a valid marital status.', ['status' => 400]);
+            $out['vtp_marital_status'] = $m;
+        }
+        foreach (['emergencyName' => 'vtp_emergency_name', 'emergencyPhone' => 'vtp_emergency_phone', 'emergencyRelation' => 'vtp_emergency_relation', 'address' => 'vtp_address'] as $k => $meta) {
+            if ($r->has_param($k)) $out[$meta] = mb_substr(sanitize_text_field((string) $r[$k]), 0, 250);
+        }
+        return $out;
+    }
+
+    private static function extra_details_store(int $id, array $d): void {
+        foreach ($d as $k => $v) update_user_meta($id, $k, $v);
+    }
+
     public static function update_profile_details(WP_REST_Request $request) {
         $position = sanitize_text_field($request['position']);
         $phone = sanitize_text_field($request['phone']);
@@ -1980,6 +2013,8 @@ class VTP_REST {
             'vtp_gender' => $gender, 'vtp_date_joining' => $joined,
             'vtp_date_birth' => $birth,
         ] as $key => $value) update_user_meta($id, $key, $value);
+        $extra = self::extra_details_clean($request); if (is_wp_error($extra)) return $extra;
+        self::extra_details_store($id, $extra);
         clean_user_cache($id);
         return rest_ensure_response(self::user_payload(get_user_by('id', $id)));
     }

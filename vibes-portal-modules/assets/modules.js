@@ -1639,3 +1639,43 @@ async function renderCRM() {
 })();
 /* Client Reviews: route watcher (router uses pushState, no hashchange) */
 (() => { let last = ''; setInterval(() => { const r = (location.hash || '').slice(1).split('?')[0]; const el = document.getElementById('vtp-view'); if (r === 'client-reviews' && el && !el.querySelector('.vcl-page') && window.__vclRender) window.__vclRender(); last = r; }, 400); })();
+
+/* Print monthly expenses */
+(() => {
+  if (window.__vpeInstalled) return; window.__vpeInstalled = true;
+  const esc = (v) => String(v ?? '').replace(/[&<>'"]/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
+  const label = (v) => ({ai_tools: 'AI tools'}[v] || String(v || 'general').replace(/_/g, ' ').replace(/^./, (c) => c.toUpperCase()));
+  const inject = () => document.querySelectorAll('.vpm-panel h2').forEach((h) => {
+    if (h.textContent.trim() !== 'Recent expenses' || h.parentElement.querySelector('.vpe-bar')) return;
+    const bar = document.createElement('div'); bar.className = 'vpe-bar';
+    const now = new Date(); const ym = now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0');
+    bar.innerHTML = `<label>Month <input type="month" class="vpe-month" value="${ym}"></label><button type="button" class="vpm-btn vpe-print">Print monthly expenses</button><span class="vpe-msg"></span>`;
+    h.after(bar);
+  });
+  new MutationObserver(inject).observe(document.body, {childList: true, subtree: true}); inject();
+  document.addEventListener('click', async (e) => {
+    const b = e.target.closest('.vpe-print'); if (!b) return;
+    const bar = b.closest('.vpe-bar'), month = bar.querySelector('.vpe-month').value, msg = bar.querySelector('.vpe-msg');
+    if (!month) { msg.textContent = 'Choose a month first.'; return; }
+    b.disabled = true; msg.textContent = 'Preparing…';
+    try {
+      let rows = [];
+      for (let page = 1; page < 50; page++) {
+        const r = await fetch(VPM.root + `finance/expenses?perPage=100&page=${page}`, {headers: {'X-WP-Nonce': VPM.nonce}, credentials: 'same-origin', cache: 'no-store'});
+        const d = await r.json(); if (!r.ok) throw new Error(d.message || 'Could not load expenses.');
+        rows = rows.concat(d.rows || []); if ((d.rows || []).length < 100) break;
+      }
+      rows = rows.filter((x) => String(x.expense_date).startsWith(month) && x.status !== 'voided').sort((a, b) => String(a.expense_date).localeCompare(String(b.expense_date)));
+      const totals = {}; rows.forEach((x) => { const c = String(x.currency || '').toUpperCase(); totals[c] = (totals[c] || 0) + Number(x.amount); });
+      const title = new Date(month + '-01T00:00:00').toLocaleDateString('en-GB', {month: 'long', year: 'numeric'});
+      const body = rows.length ? rows.map((x) => `<tr><td>${esc(x.expense_date)}</td><td>${esc(label(x.category))}</td><td>${esc(x.vendor)}</td><td>${esc(x.description || '')}</td><td class="n">${Number(x.amount).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2})} ${esc(String(x.currency).toUpperCase())}</td></tr>`).join('') : '<tr><td colspan="5" style="text-align:center;padding:24px;color:#777">No expenses recorded for this month.</td></tr>';
+      const tot = Object.entries(totals).map(([c, v]) => `<div><span>Total ${esc(c)}</span><b>${v.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2})} ${esc(c)}</b></div>`).join('');
+      const html = `<!doctype html><html><head><meta charset="utf-8"><title>Expenses ${esc(title)}</title><style>body{font:13px/1.45 Arial,sans-serif;color:#231a30;margin:32px}h1{margin:0;font-size:22px;color:#60338d}p{margin:2px 0 18px;color:#6f6482}table{width:100%;border-collapse:collapse}th{text-align:left;background:#f4effa;font-size:11px;text-transform:uppercase;letter-spacing:.06em;padding:8px;border-bottom:2px solid #60338d}td{padding:8px;border-bottom:1px solid #e8e0f2;vertical-align:top}.n{text-align:right;white-space:nowrap}.tot{margin-top:18px;display:flex;gap:28px;justify-content:flex-end}.tot div{text-align:right}.tot span{display:block;font-size:11px;color:#6f6482;text-transform:uppercase}.tot b{font-size:16px}@page{margin:14mm}</style></head><body><h1>Vibes Agency · Monthly expenses</h1><p>${esc(title)} · ${rows.length} expense${rows.length === 1 ? '' : 's'} · Printed ${new Date().toLocaleDateString('en-GB')}</p><table><thead><tr><th>Date</th><th>Category</th><th>Vendor</th><th>Description</th><th class="n">Amount</th></tr></thead><tbody>${body}</tbody></table><div class="tot">${tot}</div></body></html>`;
+      document.getElementById('vpe-frame')?.remove();
+      const f = document.createElement('iframe'); f.id = 'vpe-frame'; f.style.cssText = 'position:fixed;right:0;bottom:0;width:0;height:0;border:0'; f.srcdoc = html;
+      f.onload = () => { try { f.contentWindow.focus(); f.contentWindow.print(); } catch (_) {} };
+      document.body.appendChild(f); msg.textContent = rows.length ? '' : 'No expenses for that month.';
+    } catch (err) { msg.textContent = err.message; }
+    b.disabled = false;
+  });
+})();

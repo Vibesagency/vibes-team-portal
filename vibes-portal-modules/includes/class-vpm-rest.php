@@ -1025,6 +1025,11 @@ final class VPM_REST {
     public static function finance_void_expense(WP_REST_Request $request) {
         global $wpdb; $id = (int) $request['id'];
         if (!$wpdb->get_var($wpdb->prepare('SELECT id FROM ' . self::table('finance_expenses') . ' WHERE id=%d', $id))) return self::error('not_found', 'Expense not found.', 404);
+        if ($request->get_param('permanent')) {
+            $wpdb->delete(self::table('finance_expenses'), ['id' => $id]);
+            VPM_Permissions::audit('finance', 'expense_deleted', 'expense', $id);
+            return rest_ensure_response(['deleted' => true]);
+        }
         $wpdb->update(self::table('finance_expenses'), ['status' => 'voided'], ['id' => $id]);
         VPM_Permissions::audit('finance', 'expense_voided', 'expense', $id);
         return rest_ensure_response(['voided' => true]);

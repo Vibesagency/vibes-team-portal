@@ -197,20 +197,21 @@
     };
     const scheduleUnreadCheck = () => {
       if (unreadTimer) window.clearTimeout(unreadTimer);
-      unreadTimer = window.setTimeout(checkUnread, 60000);
+      unreadTimer = window.setTimeout(checkUnread, 20000);
     };
     const checkUnread = async () => {
-      if (document.hidden || routeIsConnect()) { updateUnreadBell(0); scheduleUnreadCheck(); return; }
+      if (document.hidden || routeIsConnect() || document.body.classList.contains('vcx-open')) { if (!document.body.classList.contains('vcx-open')) updateUnreadBell(0); scheduleUnreadCheck(); return; }
       const config = window.VPM || (typeof VPM !== 'undefined' ? VPM : null);
       if (!config?.root || !config?.nonce) { scheduleUnreadCheck(); return; }
       try {
-        const response = await fetch(`${config.root}connect/conversations`, {headers: {'X-WP-Nonce': config.nonce}, credentials: 'same-origin', cache: 'no-store'});
-        const rows = response.ok ? await response.json() : [];
-        updateUnreadBell(Array.isArray(rows) ? rows.reduce((total, row) => total + Number(row.unread_count || 0), 0) : 0);
+        const response = await fetch(`${config.root}connect/summary`, {headers: {'X-WP-Nonce': config.nonce}, credentials: 'same-origin', cache: 'no-store'});
+        const data = response.ok ? await response.json() : {};
+        updateUnreadBell(Number(data.unread || 0));
       } catch (error) { /* Keep the launcher quiet if the optional unread check is unavailable. */ }
       scheduleUnreadCheck();
     };
     window.addEventListener('hashchange', () => { if (routeIsConnect()) updateUnreadBell(0); });
+    window.addEventListener('vpm-connect-unread', event => updateUnreadBell(event.detail && event.detail.count));
     window.setTimeout(checkUnread, 1800);
     document.body.appendChild(launcher);
   }

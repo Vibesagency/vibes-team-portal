@@ -266,6 +266,33 @@ final class VPM_REST {
         register_rest_route(self::NS, '/connect/messages/(?P<id>\d+)/reactions', [
             'methods' => 'POST', 'callback' => [self::class, 'connect_reaction'], 'permission_callback' => [self::class, 'connect'],
         ]);
+        register_rest_route(self::NS, '/connect/conversations/(?P<id>\d+)', [
+            'methods' => 'PATCH', 'callback' => [self::class, 'connect_update_conversation'], 'permission_callback' => [self::class, 'connect'],
+        ]);
+        register_rest_route(self::NS, '/connect/conversations/(?P<id>\d+)/thread', [
+            'methods' => 'GET', 'callback' => [self::class, 'connect_thread'], 'permission_callback' => [self::class, 'connect'],
+        ]);
+        register_rest_route(self::NS, '/connect/conversations/(?P<id>\d+)/send', [
+            'methods' => 'POST', 'callback' => [self::class, 'connect_send'], 'permission_callback' => [self::class, 'connect'],
+        ]);
+        register_rest_route(self::NS, '/connect/conversations/(?P<id>\d+)/typing', [
+            'methods' => 'POST', 'callback' => [self::class, 'connect_typing'], 'permission_callback' => [self::class, 'connect'],
+        ]);
+        register_rest_route(self::NS, '/connect/conversations/(?P<id>\d+)/pin', [
+            'methods' => 'POST', 'callback' => [self::class, 'connect_pin'], 'permission_callback' => [self::class, 'connect'],
+        ]);
+        register_rest_route(self::NS, '/connect/conversations/(?P<id>\d+)/members', [
+            'methods' => 'POST', 'callback' => [self::class, 'connect_add_members'], 'permission_callback' => [self::class, 'connect'],
+        ]);
+        register_rest_route(self::NS, '/connect/conversations/(?P<id>\d+)/members/(?P<user>\d+)', [
+            'methods' => 'DELETE', 'callback' => [self::class, 'connect_remove_member'], 'permission_callback' => [self::class, 'connect'],
+        ]);
+        register_rest_route(self::NS, '/connect/summary', [
+            'methods' => 'GET', 'callback' => [self::class, 'connect_summary'], 'permission_callback' => [self::class, 'connect'],
+        ]);
+        register_rest_route(self::NS, '/connect/search', [
+            'methods' => 'GET', 'callback' => [self::class, 'connect_search'], 'permission_callback' => [self::class, 'connect'],
+        ]);
         register_rest_route(self::NS, '/connect/attachments', [
             'methods' => 'POST', 'callback' => [self::class, 'connect_upload_attachment'], 'permission_callback' => [self::class, 'connect'],
         ]);
@@ -420,45 +447,73 @@ final class VPM_REST {
         ]);
     }
 
-    private static function ensure_general_conversation(): int {
+    private static function ensure_general_conversation(bool $force = false): int {
         global $wpdb;
         $id = (int) $wpdb->get_var("SELECT id FROM " . self::table('connect_conversations') . " WHERE type='general' ORDER BY id ASC LIMIT 1");
         $now = current_time('mysql');
         if (!$id) {
             $wpdb->insert(self::table('connect_conversations'), ['type' => 'general', 'title' => 'General Team', 'created_by' => get_current_user_id(), 'created_at' => $now, 'updated_at' => $now]);
             $id = (int) $wpdb->insert_id;
+        } elseif (!$force && get_transient('vpm_connect_general_sync')) {
+            return $id;
         }
         $users = get_users(['fields' => 'ID', 'role__in' => ['administrator', 'vibes_manager', 'vibes_employee']]);
         foreach ($users as $user_id) {
             if (!user_can((int) $user_id, 'vpm_use_connect')) continue;
             $wpdb->query($wpdb->prepare('INSERT IGNORE INTO ' . self::table('connect_members') . ' (conversation_id,user_id,joined_at) VALUES (%d,%d,%s)', $id, (int) $user_id, $now));
         }
+        set_transient('vpm_connect_general_sync', 1, 300);
         return $id;
     }
 
     public static function connect_conversations(WP_REST_Request $request) {
         global $wpdb;
         self::ensure_general_conversation();
-        $user_id = get_current_user_id();
-        $rows = $wpdb->get_results($wpdb->prepare(
-            'SELECT c.*, (SELECT COUNT(*) FROM ' . self::table('connect_messages') . ' m WHERE m.conversation_id=c.id AND m.deleted_at IS NULL) message_count, (SELECT MAX(m.created_at) FROM ' . self::table('connect_messages') . ' m WHERE m.conversation_id=c.id AND m.deleted_at IS NULL) last_message_at, (SELECT m2.body FROM ' . self::table('connect_messages') . ' m2 WHERE m2.conversation_id=c.id AND m2.deleted_at IS NULL ORDER BY m2.id DESC LIMIT 1) last_message_body, (SELECT COUNT(*) FROM ' . self::table('connect_messages') . ' um LEFT JOIN ' . self::table('connect_reads') . ' ur ON ur.conversation_id=um.conversation_id AND ur.user_id=%d WHERE um.conversation_id=c.id AND um.deleted_at IS NULL AND um.user_id<>%d AND um.id>COALESCE(ur.last_read_message_id,0)) unread_count FROM ' . self::table('connect_conversations') . ' c INNER JOIN ' . self::table('connect_members') . ' cm ON cm.conversation_id=c.id WHERE cm.user_id=%d ORDER BY COALESCE(last_message_at,c.updated_at) DESC', $user_id, $user_id, $user_id
-        ), ARRAY_A);
+        $me = get_current_user_id();
+        $C = self::table('connect_conversations'); $M = self::table('connect_messages'); $CM = self::table('connect_members'); $RD = self::table('connect_reads');
+        $rows = $wpdb->get_results($wpdb->prepare("SELECT c.* FROM {$C} c INNER JOIN {$CM} cm ON cm.conversation_id=c.id WHERE cm.user_id=%d", $me), ARRAY_A);
+        if (!$rows) return rest_ensure_response([]);
+        $ids = array_map('intval', array_column($rows, 'id')); $in = implode(',', $ids);
+        $stats = [];
+        foreach ($wpdb->get_results($wpdb->prepare("SELECT m.conversation_id cid,COUNT(*) message_count,MAX(m.id) last_id,MAX(m.created_at) last_at,SUM(CASE WHEN m.user_id<>%d AND m.id>COALESCE(rd.last_read_message_id,0) THEN 1 ELSE 0 END) unread FROM {$M} m LEFT JOIN {$RD} rd ON rd.conversation_id=m.conversation_id AND rd.user_id=%d WHERE m.deleted_at IS NULL AND m.conversation_id IN ({$in}) GROUP BY m.conversation_id", $me, $me), ARRAY_A) as $s) $stats[(int) $s['cid']] = $s;
+        $last = [];
+        $last_ids = array_filter(array_map(static function ($s) { return (int) $s['last_id']; }, $stats));
+        if ($last_ids) foreach ($wpdb->get_results('SELECT m.id,m.conversation_id,m.user_id,m.body,u.display_name user_name FROM ' . $M . ' m LEFT JOIN ' . $wpdb->users . ' u ON u.ID=m.user_id WHERE m.id IN (' . implode(',', $last_ids) . ')', ARRAY_A) as $l) $last[(int) $l['conversation_id']] = $l;
+        $members = []; $avatars = [];
+        foreach ($wpdb->get_results("SELECT cm.conversation_id cid,u.ID id,u.display_name name,u.user_email email FROM {$CM} cm INNER JOIN {$wpdb->users} u ON u.ID=cm.user_id WHERE cm.conversation_id IN ({$in}) ORDER BY u.display_name ASC", ARRAY_A) as $m) {
+            $uid = (int) $m['id']; if (!isset($avatars[$uid])) $avatars[$uid] = self::avatar_url($uid);
+            $members[(int) $m['cid']][] = ['id' => $uid, 'name' => $m['name'], 'email' => $m['email'], 'avatar_url' => $avatars[$uid]];
+        }
+        $pins = array_map('intval', (array) get_user_meta($me, 'vpm_connect_pins', true));
+        $admin = current_user_can('manage_options');
         foreach ($rows as &$row) {
-            $row['id'] = (int) $row['id'];
+            $cid = (int) $row['id']; $s = $stats[$cid] ?? null; $l = $last[$cid] ?? null;
+            $row['id'] = $cid;
             $row['project_id'] = $row['project_id'] ? (int) $row['project_id'] : null;
             $row['task_id'] = $row['task_id'] ? (int) $row['task_id'] : null;
-            $row['message_count'] = (int) $row['message_count'];
-            $row['unread_count'] = (int) $row['unread_count'];
-            $row['members'] = $wpdb->get_results($wpdb->prepare('SELECT u.ID id,u.display_name name,u.user_email email FROM ' . $wpdb->users . ' u INNER JOIN ' . self::table('connect_members') . ' cm ON cm.user_id=u.ID WHERE cm.conversation_id=%d ORDER BY u.display_name ASC', $row['id']), ARRAY_A);
-            foreach ($row['members'] as &$member) { $member['id'] = (int) $member['id']; $member['avatar_url'] = self::avatar_url($member['id']); }
+            $row['created_by'] = (int) $row['created_by'];
+            $row['message_count'] = $s ? (int) $s['message_count'] : 0;
+            $row['unread_count'] = $s ? (int) $s['unread'] : 0;
+            $row['last_message_at'] = $s ? $s['last_at'] : null;
+            $row['last_message_id'] = $s ? (int) $s['last_id'] : 0;
+            $row['last_ts'] = $s ? self::cx_ts((string) $s['last_at']) : 0;
+            $row['last_message_body'] = $l ? (string) $l['body'] : '';
+            $row['last_message_user'] = $l ? ($l['user_name'] ?: '') : '';
+            $row['last_message_user_id'] = $l ? (int) $l['user_id'] : 0;
+            $row['members'] = $members[$cid] ?? [];
+            $row['pinned'] = in_array($cid, $pins, true);
+            $row['can_manage'] = in_array($row['type'], ['group', 'project', 'task'], true) && ($row['created_by'] === $me || $admin);
+            $row['sort_at'] = $row['last_message_at'] ?: $row['updated_at'];
         }
+        unset($row);
+        usort($rows, static function ($a, $b) { return strcmp((string) $b['sort_at'], (string) $a['sort_at']); });
         return rest_ensure_response($rows);
     }
 
     public static function connect_members(WP_REST_Request $request) {
         // Keep the General Team membership in sync whenever the member picker is opened,
         // so newly created employees appear without an administrator having to add them.
-        self::ensure_general_conversation();
+        self::ensure_general_conversation(true);
         $current = get_current_user_id();
         $users = get_users(['fields' => ['ID', 'display_name', 'user_email'], 'role__in' => ['administrator', 'vibes_manager', 'vibes_employee'], 'orderby' => 'display_name', 'order' => 'ASC']);
         $rows = [];
@@ -480,6 +535,11 @@ final class VPM_REST {
         if ($type === 'direct' && count($members) !== 2) return self::error('direct_members', 'A private conversation needs exactly two members.');
         foreach ($members as $member) if (!get_user_by('id', $member) || !user_can($member, 'vpm_use_connect')) return self::error('member_forbidden', 'Every member must be an authorized portal user.', 403);
         $now = current_time('mysql');
+        if ($type === 'direct') {
+            $other = (int) (array_values(array_diff($members, [get_current_user_id()]))[0] ?? 0);
+            $existing = (int) $wpdb->get_var($wpdb->prepare('SELECT c.id FROM ' . self::table('connect_conversations') . ' c WHERE c.type=%s AND EXISTS (SELECT 1 FROM ' . self::table('connect_members') . ' a WHERE a.conversation_id=c.id AND a.user_id=%d) AND EXISTS (SELECT 1 FROM ' . self::table('connect_members') . ' b WHERE b.conversation_id=c.id AND b.user_id=%d) AND (SELECT COUNT(*) FROM ' . self::table('connect_members') . ' m WHERE m.conversation_id=c.id)=2 ORDER BY c.id ASC LIMIT 1', 'direct', get_current_user_id(), $other));
+            if ($existing) return new WP_REST_Response(['id' => $existing, 'existing' => true], 200);
+        }
         $title = sanitize_text_field($body['title'] ?? '');
         if (!$title && $type === 'direct') {
             $names = [];
@@ -514,7 +574,7 @@ final class VPM_REST {
         $after = absint($request->get_param('after') ?: 0);
         $limit = min(100, max(1, absint($request->get_param('limit') ?: 50)));
         $current = get_current_user_id();
-        $sql = 'SELECT m.*, u.display_name user_name, p.body parent_body, pu.display_name parent_user_name FROM ' . self::table('connect_messages') . ' m LEFT JOIN ' . $wpdb->users . ' u ON u.ID=m.user_id LEFT JOIN ' . self::table('connect_messages') . ' p ON p.id=m.parent_id LEFT JOIN ' . $wpdb->users . ' pu ON pu.ID=p.user_id WHERE m.conversation_id=%d AND m.deleted_at IS NULL';
+        $sql = 'SELECT m.*, u.display_name user_name, p.body parent_body, pu.display_name parent_user_name FROM ' . self::table('connect_messages') . ' m LEFT JOIN ' . $wpdb->users . ' u ON u.ID=m.user_id LEFT JOIN ' . self::table('connect_messages') . ' p ON p.id=m.parent_id AND p.conversation_id=m.conversation_id LEFT JOIN ' . $wpdb->users . ' pu ON pu.ID=p.user_id WHERE m.conversation_id=%d AND m.deleted_at IS NULL';
         $args = [$id];
         if ($after) { $sql .= ' AND m.id>%d'; $args[] = $after; }
         $sql .= ' ORDER BY m.id ASC LIMIT %d'; $args[] = $limit;
@@ -581,7 +641,8 @@ final class VPM_REST {
         $id = self::assert_conversation($request);
         if (is_wp_error($id)) return $id;
         $message_id = absint(self::body($request)['messageId'] ?? 0) ?: null;
-        $wpdb->query($wpdb->prepare('INSERT INTO ' . self::table('connect_reads') . ' (conversation_id,user_id,last_read_message_id,updated_at) VALUES (%d,%d,%d,%s) ON DUPLICATE KEY UPDATE last_read_message_id=VALUES(last_read_message_id), updated_at=VALUES(updated_at)', $id, get_current_user_id(), $message_id ?: 0, current_time('mysql')));
+        $wpdb->query($wpdb->prepare('INSERT INTO ' . self::table('connect_reads') . ' (conversation_id,user_id,last_read_message_id,updated_at) VALUES (%d,%d,%d,%s) ON DUPLICATE KEY UPDATE last_read_message_id=GREATEST(COALESCE(last_read_message_id,0),VALUES(last_read_message_id)), updated_at=VALUES(updated_at)', $id, get_current_user_id(), $message_id ?: 0, current_time('mysql')));
+        $wpdb->query($wpdb->prepare('UPDATE ' . self::table('notifications') . " SET is_read=1 WHERE user_id=%d AND object_type='connect_conversation' AND object_id=%d AND type IN ('connect_message','connect_mention') AND is_read=0", get_current_user_id(), $id));
         return rest_ensure_response(['read' => true]);
     }
 
@@ -613,8 +674,235 @@ final class VPM_REST {
     }
 
     public static function connect_download_attachment(WP_REST_Request $request) {
-        global $wpdb; $id = absint($request['id']); $row = $wpdb->get_row($wpdb->prepare('SELECT a.*,m.conversation_id FROM ' . self::table('connect_attachments') . ' a INNER JOIN ' . self::table('connect_messages') . ' m ON m.id=a.message_id WHERE a.id=%d', $id), ARRAY_A); if (!$row || !VPM_Permissions::user_can_read_conversation((int) $row['conversation_id']) || !$row['file_path'] || !is_readable($row['file_path'])) return self::error('not_found', 'Attachment not found.', 404);
+        global $wpdb; $id = absint($request['id']); $row = $wpdb->get_row($wpdb->prepare('SELECT a.*,m.conversation_id FROM ' . self::table('connect_attachments') . ' a INNER JOIN ' . self::table('connect_messages') . ' m ON m.id=a.message_id WHERE a.id=%d AND m.deleted_at IS NULL', $id), ARRAY_A); if (!$row || !VPM_Permissions::user_can_read_conversation((int) $row['conversation_id']) || !$row['file_path'] || !is_readable($row['file_path'])) return self::error('not_found', 'Attachment not found.', 404);
         return new WP_REST_Response(['__vpm_binary_attachment' => true, 'content' => file_get_contents($row['file_path']), 'filename' => $row['filename'], 'mime' => $row['mime_type']], 200);
+    }
+
+    // ======================= Connect v2 (2026-11) =======================
+    private static function cx_ts(string $mysql): int {
+        try { return (new DateTime($mysql, wp_timezone()))->getTimestamp(); } catch (Exception $e) { return 0; }
+    }
+
+    // Cheap per-conversation change signature, typing state and read positions.
+    private static function cx_live_state(int $conversation_id): array {
+        global $wpdb; $me = get_current_user_id(); $names = [];
+        $typing = get_transient('vpm_typing_' . $conversation_id);
+        if (is_array($typing)) foreach ($typing as $uid => $ts) if ((int) $uid !== $me && time() - (int) $ts < 7) $names[] = self::user_name((int) $uid);
+        $reads = [];
+        foreach ($wpdb->get_results($wpdb->prepare('SELECT user_id,last_read_message_id FROM ' . self::table('connect_reads') . ' WHERE conversation_id=%d', $conversation_id), ARRAY_A) as $r) $reads[(string) (int) $r['user_id']] = (int) $r['last_read_message_id'];
+        return ['typing' => $names, 'reads' => (object) $reads];
+    }
+
+    public static function connect_thread(WP_REST_Request $request) {
+        global $wpdb;
+        $id = self::assert_conversation($request); if (is_wp_error($id)) return $id;
+        $me = get_current_user_id();
+        $M = self::table('connect_messages'); $A = self::table('connect_attachments'); $R = self::table('connect_reactions');
+        $before = absint($request->get_param('before') ?: 0);
+        $limit = min(100, max(10, absint($request->get_param('limit') ?: 60)));
+        $live = self::cx_live_state($id);
+        $sig = '';
+        if (!$before) {
+            $a = $wpdb->get_row($wpdb->prepare("SELECT COUNT(*) c, COALESCE(MAX(id),0) mx, COALESCE(MAX(edited_at),'') ed, COALESCE(SUM(deleted_at IS NOT NULL),0) del FROM {$M} WHERE conversation_id=%d", $id), ARRAY_A);
+            $b = $wpdb->get_row($wpdb->prepare("SELECT COUNT(*) c, COALESCE(SUM(a.id),0) s FROM {$A} a INNER JOIN {$M} m ON m.id=a.message_id WHERE m.conversation_id=%d AND m.deleted_at IS NULL", $id), ARRAY_A);
+            $c = $wpdb->get_row($wpdb->prepare("SELECT COUNT(*) c, COALESCE(SUM(r.id),0) s FROM {$R} r INNER JOIN {$M} m ON m.id=r.message_id WHERE m.conversation_id=%d AND m.deleted_at IS NULL", $id), ARRAY_A);
+            $sig = md5(implode('|', [$a['c'], $a['mx'], $a['ed'], $a['del'], $b['c'], $b['s'], $c['c'], $c['s'], $limit]));
+            if ((string) $request->get_param('sig') === $sig) return rest_ensure_response(['unchanged' => true, 'sig' => $sig] + $live);
+        }
+        $sql = "SELECT m.id,m.user_id,m.parent_id,m.body,m.created_at,m.edited_at,m.deleted_at,u.display_name user_name,p.id pid,p.body parent_body,p.deleted_at parent_deleted,pu.display_name parent_user_name FROM {$M} m LEFT JOIN {$wpdb->users} u ON u.ID=m.user_id LEFT JOIN {$M} p ON p.id=m.parent_id AND p.conversation_id=m.conversation_id LEFT JOIN {$wpdb->users} pu ON pu.ID=p.user_id WHERE m.conversation_id=%d";
+        $args = [$id];
+        if ($before) { $sql .= ' AND m.id<%d'; $args[] = $before; }
+        $sql .= ' ORDER BY m.id DESC LIMIT %d'; $args[] = $limit + 1;
+        $rows = $wpdb->get_results($wpdb->prepare($sql, ...$args), ARRAY_A);
+        $has_more = count($rows) > $limit; if ($has_more) array_pop($rows);
+        $rows = array_reverse($rows);
+        $ids = array_map('intval', array_column($rows, 'id'));
+        $atts = []; $reacts = [];
+        if ($ids) {
+            $in = implode(',', $ids);
+            foreach ($wpdb->get_results("SELECT id,message_id,filename,mime_type,file_path FROM {$A} WHERE message_id IN ({$in}) ORDER BY id ASC", ARRAY_A) as $x) {
+                $size = (!empty($x['file_path']) && is_readable($x['file_path'])) ? (int) @filesize($x['file_path']) : 0;
+                $atts[(int) $x['message_id']][] = ['id' => (int) $x['id'], 'filename' => $x['filename'], 'mime' => $x['mime_type'], 'size' => $size, 'image' => strpos((string) $x['mime_type'], 'image/') === 0, 'url' => rest_url('vibes/v1/connect/attachments/' . (int) $x['id'] . '/download')];
+            }
+            foreach ($wpdb->get_results("SELECT r.message_id,r.reaction,r.user_id,u.display_name FROM {$R} r LEFT JOIN {$wpdb->users} u ON u.ID=r.user_id WHERE r.message_id IN ({$in}) ORDER BY r.id ASC", ARRAY_A) as $x) {
+                $mid = (int) $x['message_id']; $k = $x['reaction'];
+                if (!isset($reacts[$mid][$k])) $reacts[$mid][$k] = ['reaction' => $k, 'total' => 0, 'active' => false, 'users' => []];
+                $reacts[$mid][$k]['total']++; $reacts[$mid][$k]['users'][] = $x['display_name'];
+                if ((int) $x['user_id'] === $me) $reacts[$mid][$k]['active'] = true;
+            }
+        }
+        $avatars = []; $out = [];
+        foreach ($rows as $row) {
+            $uid = (int) $row['user_id']; $mid = (int) $row['id']; $deleted = !empty($row['deleted_at']);
+            if (!isset($avatars[$uid])) $avatars[$uid] = self::avatar_url($uid);
+            $parent = null;
+            if (!empty($row['pid'])) $parent = ['id' => (int) $row['pid'], 'user_name' => $row['parent_user_name'], 'deleted' => !empty($row['parent_deleted']), 'body' => !empty($row['parent_deleted']) ? '' : wp_html_excerpt((string) $row['parent_body'], 140, '…')];
+            $out[] = ['id' => $mid, 'user_id' => $uid, 'user_name' => $row['user_name'] ?: 'Team member', 'avatar_url' => $avatars[$uid], 'body' => $deleted ? '' : (string) $row['body'], 'deleted' => $deleted, 'edited' => !$deleted && !empty($row['edited_at']), 'created_at' => $row['created_at'], 'ts' => self::cx_ts((string) $row['created_at']), 'parent' => $parent, 'attachments' => $deleted ? [] : ($atts[$mid] ?? []), 'reactions' => $deleted ? [] : array_values($reacts[$mid] ?? [])];
+        }
+        return rest_ensure_response(['sig' => $sig, 'messages' => $out, 'hasMore' => $has_more, 'me' => $me] + $live);
+    }
+
+    private static function cx_allowed_types(): array {
+        return ['image/jpeg', 'image/png', 'image/gif', 'image/webp', 'application/pdf', 'application/zip', 'text/plain', 'text/csv',
+            'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'application/vnd.openxmlformats-officedocument.presentationml.presentation'];
+    }
+
+    private static function cx_collect_files(WP_REST_Request $request): array {
+        $files = [];
+        foreach ((array) $request->get_file_params() as $key => $file) {
+            if (strpos((string) $key, 'file') !== 0 || !is_array($file)) continue;
+            if (is_array($file['name'] ?? null)) {
+                foreach ($file['name'] as $i => $name) $files[] = ['name' => $name, 'tmp_name' => $file['tmp_name'][$i] ?? '', 'size' => $file['size'][$i] ?? 0, 'error' => $file['error'][$i] ?? 0];
+            } else $files[] = $file;
+        }
+        return array_values(array_filter($files, static function ($f) { return !empty($f['name']) && (int) ($f['error'] ?? 0) !== UPLOAD_ERR_NO_FILE; }));
+    }
+
+    public static function connect_send(WP_REST_Request $request) {
+        global $wpdb;
+        $id = self::assert_conversation($request); if (is_wp_error($id)) return $id;
+        $me = get_current_user_id(); $body = self::body($request);
+        $content = trim(sanitize_textarea_field((string) ($body['body'] ?? '')));
+        $files = self::cx_collect_files($request);
+        if (count($files) > 5) return self::error('too_many_files', 'You can attach up to 5 files per message.');
+        if ($content === '' && !$files) return self::error('empty_message', 'Write a message or attach a file.');
+        if (strlen($content) > 8000) return self::error('message_too_long', 'Messages can be up to 8,000 characters.');
+        $parent = absint($body['parentId'] ?? 0);
+        if ($parent && !(int) $wpdb->get_var($wpdb->prepare('SELECT id FROM ' . self::table('connect_messages') . ' WHERE id=%d AND conversation_id=%d', $parent, $id))) $parent = 0;
+        $checked = [];
+        foreach ($files as $file) {
+            if (!is_array($file) || !empty($file['error'])) return self::error('upload_failed', 'A file could not be uploaded. Please try again.');
+            if ((int) ($file['size'] ?? 0) > 20 * 1024 * 1024) return self::error('file_too_large', 'Each attachment must be 20 MB or smaller.');
+            $type = wp_check_filetype_and_ext($file['tmp_name'], $file['name']);
+            if (empty($type['type']) || !in_array($type['type'], self::cx_allowed_types(), true)) return self::error('invalid_attachment', 'Use an image, PDF, Office file, text file or ZIP.');
+            $checked[] = [$file, $type['type']];
+        }
+        $now = current_time('mysql');
+        $wpdb->insert(self::table('connect_messages'), ['conversation_id' => $id, 'user_id' => $me, 'parent_id' => $parent ?: null, 'body' => $content, 'created_at' => $now]);
+        $message_id = (int) $wpdb->insert_id;
+        if (!$message_id) return self::error('send_failed', 'The message could not be saved.', 500);
+        if ($checked) {
+            $upload = wp_upload_dir(); $dir = trailingslashit($upload['basedir']) . 'vpm-private';
+            if (!wp_mkdir_p($dir)) return self::error('storage_error', 'Private attachment storage could not be created.', 500);
+            $deny = $dir . DIRECTORY_SEPARATOR . '.htaccess';
+            if (!file_exists($deny)) @file_put_contents($deny, "Deny from all\n<IfModule mod_authz_core.c>\nRequire all denied\n</IfModule>\n");
+            foreach ($checked as [$file, $mime]) {
+                $name = wp_unique_filename($dir, sanitize_file_name($file['name'])); $path = trailingslashit($dir) . $name;
+                if (!move_uploaded_file($file['tmp_name'], $path)) continue;
+                $wpdb->insert(self::table('connect_attachments'), ['message_id' => $message_id, 'filename' => $name, 'mime_type' => $mime, 'file_url' => '', 'file_path' => $path, 'created_at' => $now]);
+                $aid = (int) $wpdb->insert_id;
+                $wpdb->update(self::table('connect_attachments'), ['file_url' => rest_url('vibes/v1/connect/attachments/' . $aid . '/download')], ['id' => $aid]);
+            }
+        }
+        $wpdb->update(self::table('connect_conversations'), ['updated_at' => $now], ['id' => $id]);
+        self::cx_notify($id, $me, $content !== '' ? $content : 'Sent an attachment', $now);
+        // Typing state ends when the message is sent.
+        $typing = get_transient('vpm_typing_' . $id); if (is_array($typing)) { unset($typing[$me]); set_transient('vpm_typing_' . $id, $typing, 30); }
+        return new WP_REST_Response(['id' => $message_id], 201);
+    }
+
+    // One grouped notification per unread conversation (no flood), and a separate one for @mentions.
+    private static function cx_notify(int $conversation_id, int $sender, string $content, string $now): void {
+        global $wpdb; $N = self::table('notifications');
+        $title = (string) $wpdb->get_var($wpdb->prepare('SELECT title FROM ' . self::table('connect_conversations') . ' WHERE id=%d', $conversation_id));
+        $members = array_map('intval', $wpdb->get_col($wpdb->prepare('SELECT user_id FROM ' . self::table('connect_members') . ' WHERE conversation_id=%d AND user_id<>%d', $conversation_id, $sender)));
+        if (!$members) return;
+        $sender_name = self::user_name($sender); $preview = wp_trim_words($sender_name . ': ' . $content, 18, '…');
+        $mentioned = [];
+        if (strpos($content, '@') !== false) {
+            foreach ($members as $uid) {
+                $name = self::user_name($uid); $first = trim(strtok($name, ' '));
+                foreach (array_unique([$name, $first]) as $needle) if ($needle !== '' && preg_match('/@' . preg_quote($needle, '/') . '(?![\p{L}\p{N}_])/iu', $content)) { $mentioned[] = $uid; break; }
+            }
+        }
+        $in = implode(',', $members);
+        $existing = [];
+        foreach ($wpdb->get_results($wpdb->prepare("SELECT id,user_id,title FROM {$N} WHERE type='connect_message' AND object_type='connect_conversation' AND object_id=%d AND is_read=0 AND user_id IN ({$in})", $conversation_id), ARRAY_A) as $row) $existing[(int) $row['user_id']] = $row;
+        foreach ($members as $uid) {
+            if (in_array($uid, $mentioned, true)) {
+                $wpdb->insert($N, ['user_id' => $uid, 'type' => 'connect_mention', 'title' => $sender_name . ' mentioned you in ' . $title, 'body' => wp_trim_words($content, 18, '…'), 'object_type' => 'connect_conversation', 'object_id' => $conversation_id, 'created_at' => $now]);
+            }
+            if (isset($existing[$uid])) {
+                $count = preg_match('/^(\d+) new messages/', (string) $existing[$uid]['title'], $m) ? (int) $m[1] + 1 : 2;
+                $wpdb->update($N, ['title' => $count . ' new messages in ' . $title, 'body' => $preview, 'created_at' => $now], ['id' => (int) $existing[$uid]['id']]);
+            } else {
+                $wpdb->insert($N, ['user_id' => $uid, 'type' => 'connect_message', 'title' => 'New message in ' . $title, 'body' => $preview, 'object_type' => 'connect_conversation', 'object_id' => $conversation_id, 'created_at' => $now]);
+            }
+        }
+    }
+
+    public static function connect_typing(WP_REST_Request $request) {
+        $id = self::assert_conversation($request); if (is_wp_error($id)) return $id;
+        $typing = get_transient('vpm_typing_' . $id); if (!is_array($typing)) $typing = [];
+        foreach ($typing as $uid => $ts) if (time() - (int) $ts > 10) unset($typing[$uid]);
+        $typing[get_current_user_id()] = time();
+        set_transient('vpm_typing_' . $id, $typing, 30);
+        return rest_ensure_response(['ok' => true]);
+    }
+
+    public static function connect_summary(WP_REST_Request $request) {
+        global $wpdb; $me = get_current_user_id();
+        $unread = (int) $wpdb->get_var($wpdb->prepare('SELECT COUNT(*) FROM ' . self::table('connect_messages') . ' um INNER JOIN ' . self::table('connect_members') . ' cm ON cm.conversation_id=um.conversation_id AND cm.user_id=%d LEFT JOIN ' . self::table('connect_reads') . ' ur ON ur.conversation_id=um.conversation_id AND ur.user_id=%d WHERE um.deleted_at IS NULL AND um.user_id<>%d AND um.id>COALESCE(ur.last_read_message_id,0)', $me, $me, $me));
+        return rest_ensure_response(['unread' => $unread]);
+    }
+
+    public static function connect_search(WP_REST_Request $request) {
+        global $wpdb; $me = get_current_user_id();
+        $q = trim(sanitize_text_field((string) $request->get_param('q')));
+        if (mb_strlen($q) < 2) return rest_ensure_response([]);
+        $rows = $wpdb->get_results($wpdb->prepare('SELECT m.id,m.conversation_id,m.body,m.created_at,u.display_name user_name FROM ' . self::table('connect_messages') . ' m INNER JOIN ' . self::table('connect_members') . ' cm ON cm.conversation_id=m.conversation_id AND cm.user_id=%d LEFT JOIN ' . $wpdb->users . ' u ON u.ID=m.user_id WHERE m.deleted_at IS NULL AND m.body LIKE %s ORDER BY m.id DESC LIMIT 30', $me, '%' . $wpdb->esc_like($q) . '%'), ARRAY_A);
+        foreach ($rows as &$row) { $row['id'] = (int) $row['id']; $row['ts'] = self::cx_ts((string) $row['created_at']); $row['conversation_id'] = (int) $row['conversation_id']; $row['body'] = wp_html_excerpt((string) $row['body'], 220, '…'); }
+        return rest_ensure_response($rows);
+    }
+
+    private static function cx_can_manage(int $conversation_id, ?array &$conversation = null): bool|WP_Error {
+        global $wpdb;
+        $conversation = $wpdb->get_row($wpdb->prepare('SELECT * FROM ' . self::table('connect_conversations') . ' WHERE id=%d', $conversation_id), ARRAY_A);
+        if (!$conversation) return self::error('not_found', 'Conversation not found.', 404);
+        if (!in_array($conversation['type'], ['group', 'project', 'task'], true)) return self::error('not_manageable', 'This conversation cannot be changed.', 400);
+        return (int) $conversation['created_by'] === get_current_user_id() || current_user_can('manage_options');
+    }
+
+    public static function connect_update_conversation(WP_REST_Request $request) {
+        global $wpdb; $id = self::assert_conversation($request); if (is_wp_error($id)) return $id;
+        $can = self::cx_can_manage($id, $conv); if (is_wp_error($can)) return $can;
+        if (!$can) return self::error('forbidden', 'Only the group creator or an administrator can rename it.', 403);
+        $title = sanitize_text_field((string) (self::body($request)['title'] ?? ''));
+        if ($title === '') return self::error('empty_title', 'Give the group a name.');
+        $wpdb->update(self::table('connect_conversations'), ['title' => mb_substr($title, 0, 120)], ['id' => $id]);
+        return rest_ensure_response(['id' => $id, 'title' => mb_substr($title, 0, 120)]);
+    }
+
+    public static function connect_add_members(WP_REST_Request $request) {
+        global $wpdb; $id = self::assert_conversation($request); if (is_wp_error($id)) return $id;
+        $can = self::cx_can_manage($id, $conv); if (is_wp_error($can)) return $can;
+        if (!$can) return self::error('forbidden', 'Only the group creator or an administrator can add people.', 403);
+        $ids = array_values(array_unique(array_filter(array_map('absint', (array) (self::body($request)['memberIds'] ?? [])))));
+        $now = current_time('mysql'); $added = 0;
+        foreach ($ids as $uid) {
+            if (!get_user_by('id', $uid) || !user_can($uid, 'vpm_use_connect')) continue;
+            $res = $wpdb->query($wpdb->prepare('INSERT IGNORE INTO ' . self::table('connect_members') . ' (conversation_id,user_id,joined_at) VALUES (%d,%d,%s)', $id, $uid, $now));
+            if ($res) { $added++; $wpdb->insert(self::table('notifications'), ['user_id' => $uid, 'type' => 'connect_conversation', 'title' => 'You were added to a conversation', 'body' => $conv['title'], 'object_type' => 'connect_conversation', 'object_id' => $id, 'created_at' => $now]); }
+        }
+        return rest_ensure_response(['added' => $added]);
+    }
+
+    public static function connect_remove_member(WP_REST_Request $request) {
+        global $wpdb; $id = self::assert_conversation($request); if (is_wp_error($id)) return $id;
+        $can = self::cx_can_manage($id, $conv); if (is_wp_error($can)) return $can;
+        $uid = absint($request['user']); $me = get_current_user_id();
+        if ($uid !== $me && !$can) return self::error('forbidden', 'Only the group creator or an administrator can remove people.', 403);
+        $wpdb->delete(self::table('connect_members'), ['conversation_id' => $id, 'user_id' => $uid]);
+        return rest_ensure_response(['removed' => true, 'left' => $uid === $me]);
+    }
+
+    public static function connect_pin(WP_REST_Request $request) {
+        $id = self::assert_conversation($request); if (is_wp_error($id)) return $id;
+        $me = get_current_user_id(); $pins = array_map('intval', (array) get_user_meta($me, 'vpm_connect_pins', true));
+        $pinned = !in_array($id, $pins, true);
+        $pins = $pinned ? array_values(array_unique(array_merge($pins, [$id]))) : array_values(array_diff($pins, [$id]));
+        update_user_meta($me, 'vpm_connect_pins', $pins);
+        return rest_ensure_response(['pinned' => $pinned]);
     }
 
     private static function complexity_points(array $task): float {
@@ -811,7 +1099,11 @@ final class VPM_REST {
 
     public static function serve_binary_export($served, $result, $request, $server) {
         if (!$result instanceof WP_REST_Response) return $served; $data = $result->get_data(); if (!is_array($data) || (empty($data['__vpm_binary_export']) && empty($data['__vpm_binary_attachment']))) return $served;
-        $result->header('Content-Type', $data['mime'] ?? 'application/octet-stream'); $result->header('Content-Disposition', 'attachment; filename="' . sanitize_file_name($data['filename'] ?? 'export.bin') . '"'); echo $data['content'] ?? ''; return true;
+        // WordPress has already queued its JSON headers by now, so replace them with PHP header() directly.
+        $mime = (string) ($data['mime'] ?? 'application/octet-stream'); $name = sanitize_file_name($data['filename'] ?? 'export.bin'); $is_attachment = !empty($data['__vpm_binary_attachment']);
+        $inline = $is_attachment && in_array($mime, ['image/jpeg', 'image/png', 'image/gif', 'image/webp'], true);
+        if (!headers_sent()) { header('Content-Type: ' . $mime); header('Content-Disposition: ' . ($inline ? 'inline' : 'attachment') . '; filename="' . $name . '"'); header('X-Content-Type-Options: nosniff'); if ($is_attachment) header('Cache-Control: private, max-age=86400'); }
+        echo $data['content'] ?? ''; return true;
     }
 
     public static function finance_payments(WP_REST_Request $request) {

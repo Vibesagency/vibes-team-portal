@@ -98,6 +98,7 @@ window.__VPM_MODULES_PRESENT__ = true;
   }
 
   function mountConnectShell() {
+    if (window.VPMConnect) return;
     if (root()?.querySelector('.vpm-connect-page')) return;
     root().innerHTML = `<section class="vpm-page vpm-connect-page"><div class="vpm-page-head"><div><p class="vpm-eyebrow">VIBES CONNECT</p><h1>Work together, naturally.</h1><p>Private conversations for the people, projects and tasks you are authorized to see.</p></div><button type="button" class="vpm-connect-overlay-close" id="vpm-connect-close-overlay" aria-label="Close Vibes Connect">×</button></div><div class="vpm-connect"><aside class="vpm-conversation-list"><div class="vpm-connect-sidebar-head"><div><strong>Messages</strong><small id="vpm-connect-count">Loading conversations…</small></div><button type="button" class="vpm-create-group" id="vpm-new-group" aria-label="Create group" title="Create a new team group"><span class="vpm-create-group-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="9" cy="8" r="3"></circle><circle cx="17" cy="9" r="2.5"></circle><path d="M3.5 18c.5-3 2.3-4.5 5.5-4.5s5 1.5 5.5 4.5M15 15.5c2.7-.2 4.5.7 5.2 2.5M19 4v6M16 7h6"></path></svg></span><span>Create group</span></button></div><label class="vpm-search"><span>⌕</span><input id="vpm-connect-search" placeholder="Search conversations" autocomplete="off"></label><div class="vpm-connect-filters"><button type="button" class="active" data-vpm-filter="all">All</button><button type="button" data-vpm-filter="unread">Unread</button><button type="button" data-vpm-filter="groups">Groups</button><button type="button" data-vpm-filter="pinned">Pinned</button></div><div class="vpm-conversation-list-body"><div class="vpm-loading"><span></span></div></div></aside><section class="vpm-thread"><div class="vpm-thread-head"></div><div class="vpm-thread-status"><span class="vpm-online-dot"></span><span>Live updates are on</span><span class="vpm-thread-status-spacer"></span><small id="vpm-last-seen"></small></div><div id="vpm-messages" class="vpm-messages"><div class="vpm-loading"><span></span></div></div><div id="vpm-reply-preview" class="vpm-reply-preview" hidden></div><form id="vpm-message-form" class="vpm-compose"><div class="vpm-compose-main"><textarea name="body" rows="1" placeholder="Write a message…" required></textarea><div class="vpm-compose-tools"><label class="vpm-attach-btn" title="Attach a file">＋<input name="file" type="file" accept="image/*,.pdf,.docx,.xlsx,.zip"></label><input name="attachmentUrl" type="url" placeholder="Paste a secure Drive link (optional)"><span class="vpm-file-name" id="vpm-file-name"></span></div></div><button type="submit" class="vpm-send-btn" aria-label="Send message">➤</button></form></section></div></section>`;
     $('#vpm-connect-close-overlay')?.addEventListener('click', () => { closeConnectOverlay(); });
@@ -108,6 +109,7 @@ window.__VPM_MODULES_PRESENT__ = true;
   }
 
   async function renderConnect() {
+    if (window.VPMConnect) { window.VPMConnect.openFromRoute(); return; }
     mountConnectShell();
     try {
       const [conversations, members] = await Promise.all([api('connect/conversations'), api('connect/members')]);
@@ -890,4 +892,656 @@ async function renderCRM() {
   roots.forEach(root => new MutationObserver(applyFinanceCurrencyControls).observe(root, { childList: true, subtree: true }));
   window.addEventListener('hashchange', applyFinanceCurrencyControls);
   window.setTimeout(applyFinanceCurrencyControls, 500);
+})();
+
+/* Vibes Connect v2 — team chat. Replaces the earlier overlay; talks to the same vibes/v1/connect REST routes. */
+(() => {
+  'use strict';
+  if (window.__VCX_LOADED__) return; window.__VCX_LOADED__ = true;
+
+  const S = {
+    open: false, convs: [], active: null, msgs: [], sig: '', hasMore: false, reads: {}, typing: [], members: [],
+    me: Number(window.VPM && VPM.userId) || 0, filter: 'all', q: '', reply: null, edit: null, files: [], pending: [],
+    newFromId: 0, unreadBelow: 0, listTimer: 0, threadTimer: 0, lastTypingPing: 0, lastReadSent: 0, searchTimer: 0, searchRes: null, loadingThread: false, view: 'list'
+  };
+  const QUICK = ['👍', '❤️', '😂', '😮', '😢', '🙏'];
+  const EMOJI = Array.from('😀😃😄😁😆😅😂🤣😊😇🙂😉😌😍🥰😘😋😛😜🤪😎🤩🥳😏😒😞😔😟😕🙁😣😫😩🥺😢😭😤😠😡🤯😳😱😨😰😓🤗🤔🤭🤫😶😐😑😬🙄😯😮😲🥱😴🤤😷🤒🤕👍👎👏🙌🙏💪👌✌️🤞👋🤝❤️🧡💛💚💙💜🖤💔🔥✨🎉🎊💯✅❌⭐⚡☕🍕🎯📌📎💡');
+  const MAX_FILES = 5, MAX_BYTES = 20 * 1024 * 1024;
+  const coarse = () => window.matchMedia && matchMedia('(pointer: coarse)').matches;
+  const mobile = () => window.matchMedia && matchMedia('(max-width: 760px)').matches;
+
+  const $ = (sel, el = document) => el.querySelector(sel);
+  const $$ = (sel, el = document) => Array.from(el.querySelectorAll(sel));
+  const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;'}[c]));
+  const icons = {
+    send: '<svg viewBox="0 0 24 24"><path d="M4 12 20 4l-4.5 16-3.5-6.5L4 12Z"/><path d="m12 13.5 3.5-5"/></svg>',
+    clip: '<svg viewBox="0 0 24 24"><path d="m20 11-8.2 8.2a5 5 0 0 1-7-7L13.5 3.5a3.3 3.3 0 0 1 4.7 4.7L9.6 16.8a1.7 1.7 0 0 1-2.4-2.4l7.8-7.8"/></svg>',
+    smile: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M8.5 14.2a4.2 4.2 0 0 0 7 0M9 9.5h.01M15 9.5h.01"/></svg>',
+    back: '<svg viewBox="0 0 24 24"><path d="m15 5-7 7 7 7"/></svg>',
+    close: '<svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></svg>',
+    plus: '<svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>',
+    search: '<svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="m16 16 4 4"/></svg>',
+    info: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></svg>',
+    pin: '<svg viewBox="0 0 24 24"><path d="M9 4h6l-1 6 3 3H7l3-3-1-6ZM12 13v7"/></svg>',
+    more: '<svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.4"/><circle cx="12" cy="12" r="1.4"/><circle cx="19" cy="12" r="1.4"/></svg>',
+    reply: '<svg viewBox="0 0 24 24"><path d="M9 7 4 12l5 5"/><path d="M4 12h9a7 7 0 0 1 7 7"/></svg>',
+    file: '<svg viewBox="0 0 24 24"><path d="M7 3h7l4 4v14H7z"/><path d="M14 3v4h4"/></svg>',
+    check: '<svg viewBox="0 0 24 24"><path d="m5 12.500 4.500 4.500L19 7.500"/></svg>',
+    chat: '<svg viewBox="0 0 24 24"><path d="M20 11.500a7.500 7.500 0 0 1-8 7.500 8.800 8.800 0 0 1-3.200-.600L4 20l1.200-3.700A7.200 7.200 0 0 1 4 11.500 7.500 7.500 0 0 1 12 4a7.500 7.500 0 0 1 8 7.500Z"/></svg>',
+    users: '<svg viewBox="0 0 24 24"><circle cx="9" cy="8" r="3"/><path d="M3.500 19c.4-3 2.200-4.500 5.500-4.500s5.100 1.500 5.500 4.500M16 6a3 3 0 0 1 0 5.500M17 14.500c2 .5 3.200 1.800 3.600 4.500"/></svg>'
+  };
+
+  // ---------- helpers ----------
+  const api = async (path, options = {}) => {
+    const headers = {'X-WP-Nonce': VPM.nonce, ...(options.headers || {})};
+    if (options.body && !(options.body instanceof FormData) && typeof options.body !== 'string') { headers['Content-Type'] = 'application/json'; options.body = JSON.stringify(options.body); }
+    const res = await fetch(VPM.root + path.replace(/^\//, ''), {...options, headers, credentials: 'same-origin', cache: 'no-store'});
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.message || 'The request could not be completed.');
+    return data;
+  };
+  const initials = (n) => String(n || '?').trim().split(/\s+/).slice(0, 2).map((p) => p[0]).join('').toUpperCase() || '?';
+  const hue = (n) => { let h = 0; for (const c of String(n)) h = (h * 31 + c.codePointAt(0)) % 360; return h; };
+  const avatar = (name, url, size = '') => {
+    const real = url && !String(url).includes('d=mm') ? url : '';
+    return `<span class="vcx-av ${size}" style="--h:${hue(name)}">${real ? `<img src="${esc(real)}" alt="" loading="lazy">` : `<b>${esc(initials(name))}</b>`}</span>`;
+  };
+  const groupAv = (size = '') => `<span class="vcx-av vcx-av-group ${size}"><svg viewBox="0 0 24 24"><circle cx="9" cy="8" r="3"/><path d="M3.500 19c.4-3 2.200-4.500 5.500-4.500s5.100 1.500 5.500 4.500M16 6a3 3 0 0 1 0 5.500M17 14.500c2 .5 3.200 1.800 3.600 4.500"/></svg></span>`;
+  const other = (c) => (c.members || []).find((m) => Number(m.id) !== S.me);
+  const isDirect = (c) => c.type === 'direct';
+  const convTitle = (c) => isDirect(c) ? (other(c)?.name || c.title) : (c.title || 'Conversation');
+  const convAv = (c, size) => isDirect(c) ? avatar(other(c)?.name || c.title, other(c)?.avatar_url, size) : groupAv(size);
+  const tsOf = (m) => (m.ts ? m.ts * 1000 : new Date(String(m.created_at).replace(' ', 'T')).getTime());
+  const fmtTime = (ms) => new Date(ms).toLocaleTimeString([], {hour: 'numeric', minute: '2-digit'});
+  const dayKey = (ms) => { const d = new Date(ms); return `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`; };
+  const dayLabel = (ms) => {
+    const d = new Date(ms), now = new Date(), yest = new Date(Date.now() - 864e5);
+    if (dayKey(ms) === dayKey(now.getTime())) return 'Today';
+    if (dayKey(ms) === dayKey(yest.getTime())) return 'Yesterday';
+    return d.toLocaleDateString([], {weekday: 'long', day: 'numeric', month: 'long', year: d.getFullYear() === now.getFullYear() ? undefined : 'numeric'});
+  };
+  const listTime = (ms) => {
+    if (!ms) return ''; const now = Date.now();
+    if (dayKey(ms) === dayKey(now)) return fmtTime(ms);
+    if (dayKey(ms) === dayKey(now - 864e5)) return 'Yesterday';
+    if (now - ms < 6 * 864e5) return new Date(ms).toLocaleDateString([], {weekday: 'short'});
+    return new Date(ms).toLocaleDateString([], {day: 'numeric', month: 'short'});
+  };
+  const sizeLabel = (b) => !b ? '' : b > 1048576 ? (b / 1048576).toFixed(1) + ' MB' : Math.max(1, Math.round(b / 1024)) + ' KB';
+  const emojiName = (e) => 'u' + Array.from(e).map((c) => c.codePointAt(0).toString(16)).join('-');
+  const emojiFrom = (name) => {
+    const legacy = {thumbs_up: '👍', heart: '❤️', laugh: '😂', smile: '😊', wow: '😮', sad: '😢', pray: '🙏', fire: '🔥', celebrate: '🎉'};
+    if (legacy[name]) return legacy[name];
+    if (/^u[0-9a-f]+(-[0-9a-f]+)*$/.test(name)) { try { return String.fromCodePoint(...name.slice(1).split('-').map((h) => parseInt(h, 16))); } catch (e) { /* fall through */ } }
+    return name;
+  };
+  const previewText = (c) => {
+    if (!c.message_count) return 'No messages yet';
+    const who = Number(c.last_message_user_id) === S.me ? 'You: ' : (!isDirect(c) && c.last_message_user ? c.last_message_user.split(' ')[0] + ': ' : '');
+    return who + (c.last_message_body ? c.last_message_body.replace(/\s+/g, ' ') : '📎 Attachment');
+  };
+  const memberNamesRe = () => {
+    const names = (S.active?.members || []).map((m) => m.name).filter(Boolean);
+    const firsts = names.map((n) => n.split(' ')[0]).filter((n) => n.length > 1);
+    const all = Array.from(new Set([...names, ...firsts])).sort((a, b) => b.length - a.length).map((n) => n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+    return all.length ? new RegExp('@(' + all.join('|') + ')(?![\\p{L}\\p{N}_])', 'giu') : null;
+  };
+  const richText = (text) => {
+    let html = esc(text);
+    html = html.replace(/(https?:\/\/[^\s<]+[^\s<.,;:!?)\]'"])/g, '<a href="$1" target="_blank" rel="noopener noreferrer nofollow">$1</a>');
+    const re = memberNamesRe(); if (re) html = html.replace(re, '<span class="vcx-mention">$&</span>');
+    return html.replace(/\n/g, '<br>');
+  };
+  const toast = (text, kind = 'info') => {
+    const host = $('#vcx-toasts'); if (!host) return;
+    const t = document.createElement('div'); t.className = 'vcx-toast ' + kind; t.textContent = text; host.appendChild(t);
+    setTimeout(() => t.classList.add('out'), 3600); setTimeout(() => t.remove(), 4000);
+  };
+  const emitUnread = () => {
+    const total = S.convs.reduce((n, c) => n + Number(c.unread_count || 0), 0);
+    window.dispatchEvent(new CustomEvent('vpm-connect-unread', {detail: {count: total}}));
+  };
+
+  // ---------- shell ----------
+  function shell() {
+    return `<div class="vcx-app" data-view="list">
+      <aside class="vcx-side" aria-label="Conversations">
+        <header class="vcx-side-head">
+          <div class="vcx-brand"><span class="vcx-logo">${icons.chat}</span><div><strong>Vibes Connect</strong><small>Team chat</small></div></div>
+          <div class="vcx-head-actions"><button type="button" class="vcx-icon-btn primary" data-act="new" aria-label="Start a new chat" title="New chat">${icons.plus}</button><button type="button" class="vcx-icon-btn" data-act="close" aria-label="Close Vibes Connect" title="Close">${icons.close}</button></div>
+        </header>
+        <div class="vcx-search"><span>${icons.search}</span><input id="vcx-search" type="search" placeholder="Search chats, people and messages" autocomplete="off" aria-label="Search"></div>
+        <div class="vcx-filters" role="tablist">${[['all', 'All'], ['unread', 'Unread'], ['groups', 'Groups'], ['pinned', 'Pinned']].map(([k, l]) => `<button type="button" role="tab" data-filter="${k}" class="${S.filter === k ? 'on' : ''}">${l}<i data-count="${k}"></i></button>`).join('')}</div>
+        <div class="vcx-list" id="vcx-list" role="list"></div>
+      </aside>
+      <section class="vcx-main" aria-label="Chat">
+        <div class="vcx-empty-main" id="vcx-empty"><div><span>${icons.chat}</span><h2>Select a conversation</h2><p>Pick a chat on the left or start a new one.</p></div></div>
+        <div class="vcx-chat" id="vcx-chat" hidden>
+          <header class="vcx-chat-head" id="vcx-chat-head"></header>
+          <div class="vcx-scroll" id="vcx-scroll" tabindex="0"></div>
+          <button type="button" class="vcx-jump" id="vcx-jump" hidden></button>
+          <div class="vcx-typing" id="vcx-typing" hidden></div>
+          <div class="vcx-bars" id="vcx-bars"></div>
+          <form class="vcx-composer" id="vcx-composer" autocomplete="off">
+            <button type="button" class="vcx-icon-btn" data-act="attach" aria-label="Attach files" title="Attach files">${icons.clip}</button>
+            <input type="file" id="vcx-file" multiple hidden accept="image/*,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.zip,.txt,.csv">
+            <div class="vcx-input-wrap"><textarea id="vcx-input" rows="1" placeholder="Write a message" aria-label="Message"></textarea><button type="button" class="vcx-icon-btn" data-act="emoji" aria-label="Insert emoji" title="Emoji">${icons.smile}</button></div>
+            <button type="submit" class="vcx-send" id="vcx-send" aria-label="Send message" title="Send">${icons.send}</button>
+          </form>
+        </div>
+      </section>
+      <div class="vcx-drop" id="vcx-drop" hidden>Drop files to attach</div>
+    </div>
+    <div id="vcx-layer"></div><div id="vcx-toasts" aria-live="polite"></div>`;
+  }
+
+  function openOverlay() {
+    if (S.open) return;
+    S.open = true;
+    let root = document.getElementById('vcx-root');
+    if (!root) { root = document.createElement('div'); root.id = 'vcx-root'; root.className = 'vcx-backdrop'; root.setAttribute('role', 'dialog'); root.setAttribute('aria-modal', 'true'); root.setAttribute('aria-label', 'Vibes Connect'); document.body.appendChild(root); }
+    root.innerHTML = shell();
+    document.body.classList.add('vcx-open');
+    bindShell(root);
+    sizeToViewport();
+    loadAll(true);
+  }
+  function closeOverlay() {
+    S.open = false; clearTimeout(S.listTimer); clearTimeout(S.threadTimer);
+    S.active = null; S.msgs = []; S.sig = ''; S.reply = null; S.edit = null; S.files.forEach(releaseFile); S.files = []; S.pending = []; S.view = 'list';
+    document.getElementById('vcx-root')?.remove(); document.body.classList.remove('vcx-open');
+    document.documentElement.style.removeProperty('--vcx-h');
+  }
+  function openFromRoute() {
+    if ((location.hash || '').slice(1).split('?')[0] === 'connect') {
+      let back = '#dashboard'; try { back = sessionStorage.getItem('vtp-connect-return-hash') || '#dashboard'; sessionStorage.removeItem('vtp-connect-return-hash'); } catch (e) { /* ignore */ }
+      if (back === '#connect') back = '#dashboard';
+      history.replaceState(history.state, '', back);
+      window.dispatchEvent(new HashChangeEvent('hashchange'));
+    }
+    openOverlay();
+  }
+  function sizeToViewport() {
+    const vv = window.visualViewport; if (!S.open) return;
+    document.documentElement.style.setProperty('--vcx-h', (vv ? vv.height : window.innerHeight) + 'px');
+  }
+
+  function setView(view) {
+    S.view = view; const app = $('.vcx-app'); if (app) app.dataset.view = view;
+  }
+
+  // ---------- data ----------
+  async function loadAll(first) {
+    try {
+      const [convs, members] = await Promise.all([api('connect/conversations'), api('connect/members')]);
+      S.convs = convs || []; S.members = members || [];
+      renderList(); emitUnread();
+      if (first && !mobile() && S.convs.length) await openConversation(S.convs.find((c) => c.type === 'general' || c.pinned)?.id || S.convs[0].id, {keepView: true});
+    } catch (e) { const l = $('#vcx-list'); if (l) l.innerHTML = `<div class="vcx-note error">${esc(e.message)}</div>`; }
+    schedule();
+  }
+  function schedule() {
+    clearTimeout(S.listTimer); clearTimeout(S.threadTimer); if (!S.open) return;
+    const hidden = document.visibilityState === 'hidden';
+    S.listTimer = setTimeout(async () => { try { S.convs = await api('connect/conversations'); renderList(false); emitUnread(); renderHeadMeta(); } catch (e) { /* retry next tick */ } schedule(); }, hidden ? 45000 : 15000);
+    if (S.active) S.threadTimer = setTimeout(async () => { try { await loadThread(); } catch (e) { /* retry */ } }, hidden ? 20000 : 4000);
+  }
+  async function refreshNow() { if (!S.open) return; try { S.convs = await api('connect/conversations'); renderList(false); emitUnread(); if (S.active) await loadThread(); } catch (e) { /* ignore */ } schedule(); }
+
+  async function openConversation(id, opts = {}) {
+    const conv = S.convs.find((c) => Number(c.id) === Number(id)); if (!conv) return;
+    S.active = conv; S.msgs = []; S.sig = ''; S.hasMore = false; S.reply = null; S.edit = null; S.pending = []; S.unreadBelow = 0; S.lastReadSent = 0; S.newFromId = 0; S.typing = [];
+    S.files.forEach(releaseFile); S.files = [];
+    S.reads = {};
+    $('#vcx-empty').hidden = true; $('#vcx-chat').hidden = false;
+    $('#vcx-scroll').innerHTML = '<div class="vcx-loading"><span></span></div>';
+    renderChatHead(); renderBars(); renderList(false);
+    if (!opts.keepView || mobile()) setView('chat');
+    const input = $('#vcx-input'); if (input) { input.value = ''; autosize(); }
+    try { await loadThread(true, opts.jumpTo); } catch (e) { $('#vcx-scroll').innerHTML = `<div class="vcx-note error">${esc(e.message)}</div>`; }
+    schedule();
+    if (!mobile() && !coarse()) input?.focus();
+  }
+
+  async function loadThread(initial = false, jumpTo = 0) {
+    if (!S.active || S.loadingThread) return; S.loadingThread = true;
+    const id = S.active.id;
+    try {
+      const data = await api(`connect/conversations/${id}/thread?limit=60${S.sig && !initial ? '&sig=' + S.sig : ''}`);
+      if (!S.active || S.active.id !== id) return;
+      S.reads = data.reads || {}; S.typing = data.typing || [];
+      if (!data.unchanged) {
+        const firstLoad = initial || !S.msgs.length;
+        const prevIds = new Set(S.msgs.map((m) => m.id));
+        const myRead = Number(S.reads[String(S.me)] || 0);
+        if (firstLoad) S.newFromId = myRead;
+        const incoming = (data.messages || []).filter((m) => !prevIds.has(m.id) && m.user_id !== S.me);
+        // Keep older pages the user already loaded; replace the newest window.
+        const oldest = data.messages[0]?.id || 0;
+        const keepOlder = firstLoad ? [] : S.msgs.filter((m) => m.id < oldest);
+        S.msgs = [...keepOlder, ...(data.messages || [])];
+        if (firstLoad) S.hasMore = !!data.hasMore; else if (keepOlder.length === 0) S.hasMore = !!data.hasMore;
+        S.sig = data.sig;
+        S.pending = S.pending.filter((p) => p.status === 'failed');
+        renderMessages({firstLoad, incomingCount: firstLoad ? 0 : incoming.length, jumpTo});
+      }
+      renderTyping(); renderSeen();
+      markRead();
+    } finally { S.loadingThread = false; }
+    if (S.open && S.active && S.active.id === id) { clearTimeout(S.threadTimer); S.threadTimer = setTimeout(() => loadThread().catch(() => schedule()), document.visibilityState === 'hidden' ? 20000 : 4000); }
+  }
+
+  async function loadOlder() {
+    if (!S.active || !S.hasMore || !S.msgs.length) return;
+    const btn = $('#vcx-older'); if (btn) { btn.disabled = true; btn.textContent = 'Loading…'; }
+    const sc = $('#vcx-scroll'); const before = sc.scrollHeight;
+    try {
+      const data = await api(`connect/conversations/${S.active.id}/thread?limit=60&before=${S.msgs[0].id}`);
+      S.msgs = [...(data.messages || []), ...S.msgs]; S.hasMore = !!data.hasMore;
+      renderMessages({keepScroll: true}); sc.scrollTop = sc.scrollHeight - before;
+    } catch (e) { toast(e.message, 'error'); }
+  }
+
+  function markRead() {
+    if (!S.active || document.visibilityState === 'hidden') return;
+    const last = [...S.msgs].reverse().find((m) => !m.deleted);
+    if (!last || last.id <= S.lastReadSent) return;
+    const mineRead = Number(S.reads[String(S.me)] || 0);
+    const cur = S.convs.find((x) => x.id === S.active.id);
+    if (last.id <= mineRead && !Number(cur?.unread_count || 0)) { S.lastReadSent = last.id; return; }
+    S.lastReadSent = last.id;
+    api(`connect/conversations/${S.active.id}/read`, {method: 'POST', body: {messageId: last.id}}).then(() => {
+      S.reads[String(S.me)] = last.id; const c = S.convs.find((x) => x.id === S.active.id); if (c) c.unread_count = 0; renderList(false); emitUnread();
+    }).catch(() => { S.lastReadSent = 0; });
+  }
+
+  // ---------- list ----------
+  function filteredConvs() {
+    const q = S.q.toLowerCase();
+    let rows = S.convs.filter((c) => {
+      if (S.filter === 'unread' && !Number(c.unread_count)) return false;
+      if (S.filter === 'groups' && isDirect(c)) return false;
+      if (S.filter === 'pinned' && !c.pinned) return false;
+      if (!q) return true;
+      return convTitle(c).toLowerCase().includes(q) || (c.members || []).some((m) => (m.name || '').toLowerCase().includes(q));
+    });
+    rows.sort((a, b) => (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0) || String(b.sort_at || '').localeCompare(String(a.sort_at || '')));
+    return rows;
+  }
+  function renderList(resetScroll = true) {
+    const list = $('#vcx-list'); if (!list) return;
+    const keep = list.scrollTop;
+    $$('.vcx-filters [data-count]').forEach((el) => {
+      const k = el.dataset.count; const n = k === 'unread' ? S.convs.filter((c) => Number(c.unread_count)).length : 0; el.textContent = n ? n : ''; el.style.display = n ? '' : 'none';
+    });
+    const rows = filteredConvs();
+    let html = rows.map((c) => {
+      const unread = Number(c.unread_count) || 0, active = S.active && S.active.id === c.id;
+      return `<button type="button" role="listitem" class="vcx-row ${active ? 'active' : ''} ${unread ? 'unread' : ''}" data-open="${c.id}">
+        ${convAv(c)}
+        <span class="vcx-row-body"><span class="vcx-row-top"><strong>${esc(convTitle(c))}</strong><time>${esc(listTime(Number(c.last_ts) * 1000))}</time></span>
+        <span class="vcx-row-bottom"><span class="vcx-preview">${esc(previewText(c))}</span>${c.pinned ? `<i class="vcx-pinned" title="Pinned">${icons.pin}</i>` : ''}${unread ? `<b class="vcx-badge">${unread > 99 ? '99+' : unread}</b>` : ''}</span></span></button>`;
+    }).join('');
+    if (S.q.length >= 2 && S.searchRes) {
+      html += `<div class="vcx-section">Messages</div>` + (S.searchRes.length ? S.searchRes.map((r) => {
+        const c = S.convs.find((x) => x.id === r.conversation_id); if (!c) return '';
+        return `<button type="button" role="listitem" class="vcx-row result" data-open="${c.id}" data-jump="${r.id}">${convAv(c)}<span class="vcx-row-body"><span class="vcx-row-top"><strong>${esc(convTitle(c))}</strong><time>${esc(listTime(Number(r.ts) * 1000))}</time></span><span class="vcx-row-bottom"><span class="vcx-preview"><b>${esc((r.user_name || '').split(' ')[0])}:</b> ${esc(r.body)}</span></span></span></button>`;
+      }).join('') : '<div class="vcx-note">No matching messages</div>');
+    }
+    if (!html) html = S.convs.length ? `<div class="vcx-note">${S.filter === 'unread' ? 'You are all caught up 🎉' : S.filter === 'pinned' ? 'Pin a chat to keep it at the top.' : 'Nothing matches your search.'}</div>` : `<div class="vcx-note">No conversations yet. Tap <b>+</b> to start one.</div>`;
+    list.innerHTML = html;
+    list.scrollTop = resetScroll ? 0 : keep;
+  }
+
+  // ---------- chat header ----------
+  function subtitle(c) {
+    if (S.typing.length) return `<span class="vcx-typing-text">${esc(S.typing.join(', '))} ${S.typing.length > 1 ? 'are' : 'is'} typing…</span>`;
+    if (isDirect(c)) return 'Direct message';
+    const n = (c.members || []).length; const names = (c.members || []).filter((m) => Number(m.id) !== S.me).slice(0, 3).map((m) => m.name.split(' ')[0]).join(', ');
+    return `${n} members${names ? ' · You, ' + esc(names) + (n > 4 ? '…' : '') : ''}`;
+  }
+  function renderChatHead() {
+    const c = S.active, el = $('#vcx-chat-head'); if (!c || !el) return;
+    el.innerHTML = `<button type="button" class="vcx-icon-btn vcx-back" data-act="back" aria-label="Back to conversations">${icons.back}</button>
+      <button type="button" class="vcx-head-main" data-act="info" aria-label="Conversation details">${convAv(c, 'md')}<span><strong>${esc(convTitle(c))}</strong><small id="vcx-sub">${subtitle(c)}</small></span></button>
+      <div class="vcx-head-actions"><button type="button" class="vcx-icon-btn ${c.pinned ? 'on' : ''}" data-act="pin" aria-label="${c.pinned ? 'Unpin' : 'Pin'} conversation" title="${c.pinned ? 'Unpin' : 'Pin'}">${icons.pin}</button><button type="button" class="vcx-icon-btn" data-act="info" aria-label="Details" title="Details">${icons.info}</button><button type="button" class="vcx-icon-btn vcx-close-chat" data-act="close" aria-label="Close" title="Close">${icons.close}</button></div>`;
+  }
+  function renderHeadMeta() { const c = S.convs.find((x) => S.active && x.id === S.active.id); if (c) { S.active = c; const sub = $('#vcx-sub'); if (sub) sub.innerHTML = subtitle(c); } }
+  function renderTyping() {
+    const el = $('#vcx-typing'); if (!el) return; const sub = $('#vcx-sub'); if (sub && S.active) sub.innerHTML = subtitle(S.active);
+    el.hidden = !S.typing.length; el.innerHTML = S.typing.length ? `<span class="vcx-dots"><i></i><i></i><i></i></span> ${esc(S.typing.join(', '))} ${S.typing.length > 1 ? 'are' : 'is'} typing` : '';
+  }
+  function renderSeen() {
+    $$('.vcx-seen').forEach((n) => n.remove());
+    const mine = [...S.msgs].reverse().find((m) => m.user_id === S.me && !m.deleted); if (!mine || !S.active) return;
+    const others = (S.active.members || []).filter((m) => Number(m.id) !== S.me);
+    const seen = others.filter((m) => Number(S.reads[String(m.id)] || 0) >= mine.id);
+    if (!seen.length) return;
+    const node = $(`[data-msg="${mine.id}"] .vcx-meta`); if (!node) return;
+    const label = isDirect(S.active) ? 'Seen' : (seen.length === others.length ? 'Seen by everyone' : `Seen by ${seen.length}`);
+    node.insertAdjacentHTML('beforeend', `<span class="vcx-seen" title="${esc(seen.map((m) => m.name).join(', '))}">${icons.check}${label}</span>`);
+  }
+
+  // ---------- messages ----------
+  function attachmentHtml(a) {
+    const url = a.url + (a.url.includes('?') ? '&' : '?') + '_wpnonce=' + encodeURIComponent(VPM.nonce);
+    if (a.image) return `<button type="button" class="vcx-img" data-lightbox="${esc(url)}" data-name="${esc(a.filename)}"><img src="${esc(url)}" alt="${esc(a.filename)}" loading="lazy"></button>`;
+    return `<a class="vcx-file" href="${esc(url)}" download="${esc(a.filename)}"><span class="vcx-file-ic">${icons.file}</span><span><strong>${esc(a.filename)}</strong><small>${esc(sizeLabel(a.size) || (a.mime || '').split('/').pop().toUpperCase())}</small></span></a>`;
+  }
+  function bubble(m, grouped, first) {
+    const mine = m.user_id === S.me; const ts = tsOf(m);
+    if (m.deleted) return `<div class="vcx-msg ${mine ? 'mine' : ''} ${grouped ? 'grouped' : ''}" data-msg="${m.id}">${mine || grouped ? '<span class="vcx-av-spacer"></span>' : avatar(m.user_name, m.avatar_url, 'sm')}<div class="vcx-col"><div class="vcx-bubble deleted">🚫 This message was deleted</div></div></div>`;
+    const quote = m.parent ? `<button type="button" class="vcx-quote" data-goto="${m.parent.id}"><b>${esc(m.parent.user_name || 'Message')}</b><span>${m.parent.deleted ? 'Deleted message' : esc(m.parent.body || '📎 Attachment')}</span></button>` : '';
+    const atts = (m.attachments || []).length ? `<div class="vcx-atts ${(m.attachments || []).every((a) => a.image) ? 'imgs' : ''}">${m.attachments.map(attachmentHtml).join('')}</div>` : '';
+    const body = m.body ? `<div class="vcx-text">${richText(m.body)}</div>` : '';
+    const reacts = (m.reactions || []).length ? `<div class="vcx-reacts">${m.reactions.map((r) => `<button type="button" class="vcx-react ${r.active ? 'on' : ''}" data-react="${m.id}" data-name="${esc(r.reaction)}" title="${esc((r.users || []).join(', '))}"><span>${esc(emojiFrom(r.reaction))}</span><b>${r.total}</b></button>`).join('')}</div>` : '';
+    return `<div class="vcx-msg ${mine ? 'mine' : ''} ${grouped ? 'grouped' : ''}" data-msg="${m.id}">
+      ${mine ? '' : (grouped ? '<span class="vcx-av-spacer"></span>' : avatar(m.user_name, m.avatar_url, 'sm'))}
+      <div class="vcx-col">${!mine && first && !isDirect(S.active) ? `<span class="vcx-name" style="--h:${hue(m.user_name)}">${esc(m.user_name)}</span>` : ''}
+        <div class="vcx-bubble-row"><div class="vcx-bubble ${m.attachments?.length && !m.body && !m.parent ? 'media' : ''}" data-menu="${m.id}">${quote}${atts}${body}<span class="vcx-meta"><time>${esc(fmtTime(ts))}</time>${m.edited ? '<em>edited</em>' : ''}</span></div>
+        <div class="vcx-tools"><button type="button" data-quick="${m.id}" aria-label="React" title="React">${icons.smile}</button><button type="button" data-replyto="${m.id}" aria-label="Reply" title="Reply">${icons.reply}</button><button type="button" data-menu-btn="${m.id}" aria-label="More actions" title="More">${icons.more}</button></div></div>
+        ${reacts}</div></div>`;
+  }
+  function pendingBubble(p) {
+    return `<div class="vcx-msg mine pending ${p.status}" data-pending="${p.id}"><div class="vcx-col"><div class="vcx-bubble-row"><div class="vcx-bubble">${p.files.length ? `<div class="vcx-atts">${p.files.map((f) => f.type.startsWith('image/') ? `<span class="vcx-img"><img src="${esc(f.preview)}" alt=""></span>` : `<span class="vcx-file"><span class="vcx-file-ic">${icons.file}</span><span><strong>${esc(f.file.name)}</strong></span></span>`).join('')}</div>` : ''}${p.body ? `<div class="vcx-text">${richText(p.body)}</div>` : ''}<span class="vcx-meta">${p.status === 'failed' ? '<em class="err">Not sent</em>' : '<em>Sending…</em>'}</span></div></div>${p.status === 'failed' ? `<div class="vcx-failed"><span>${esc(p.error || 'Could not send.')}</span><button type="button" data-retry="${p.id}">Retry</button><button type="button" data-discard="${p.id}">Discard</button></div>` : ''}</div></div>`;
+  }
+  function renderMessages(opts = {}) {
+    const sc = $('#vcx-scroll'); if (!sc) return;
+    const nearBottom = sc.scrollHeight - sc.scrollTop - sc.clientHeight < 140;
+    const prevTop = sc.scrollTop;
+    let html = S.hasMore ? '<div class="vcx-older-wrap"><button type="button" id="vcx-older" class="vcx-older">Load earlier messages</button></div>' : '';
+    if (!S.msgs.length && !S.pending.length) {
+      html = `<div class="vcx-hello"><span>${icons.chat}</span><h3>${isDirect(S.active) ? 'Say hi to ' + esc(convTitle(S.active).split(' ')[0]) : 'Start the conversation'}</h3><p>Messages here are only visible to ${isDirect(S.active) ? 'you two' : 'the members of this chat'}.</p></div>`;
+    } else {
+      let lastDay = '', lastUser = 0, lastTs = 0, newShown = false;
+      S.msgs.forEach((m) => {
+        const ts = tsOf(m), dk = dayKey(ts);
+        if (dk !== lastDay) { html += `<div class="vcx-day"><span>${esc(dayLabel(ts))}</span></div>`; lastDay = dk; lastUser = 0; }
+        if (!newShown && S.newFromId && m.id > S.newFromId && m.user_id !== S.me) { html += '<div class="vcx-new"><span>New messages</span></div>'; newShown = true; lastUser = 0; }
+        const grouped = lastUser === m.user_id && ts - lastTs < 5 * 60000;
+        html += bubble(m, grouped, !grouped); lastUser = m.user_id; lastTs = ts;
+      });
+      S.pending.forEach((p) => { html += pendingBubble(p); });
+    }
+    sc.innerHTML = html;
+    renderSeen();
+    if (opts.keepScroll) return;
+    if (opts.jumpTo) { requestAnimationFrame(() => gotoMessage(opts.jumpTo)); return; }
+    if (opts.firstLoad) {
+      const marker = $('.vcx-new', sc);
+      requestAnimationFrame(() => { if (marker && S.newFromId && sc.scrollHeight - marker.offsetTop < sc.clientHeight * 3) sc.scrollTop = Math.max(0, marker.offsetTop - 80); else sc.scrollTop = sc.scrollHeight; updateJump(); });
+    } else if (nearBottom || S.pending.length) { sc.scrollTop = sc.scrollHeight; S.unreadBelow = 0; updateJump(); }
+    else { sc.scrollTop = prevTop; S.unreadBelow += opts.incomingCount || 0; updateJump(); }
+  }
+  function updateJump() {
+    const sc = $('#vcx-scroll'), j = $('#vcx-jump'); if (!sc || !j) return;
+    const away = sc.scrollHeight - sc.scrollTop - sc.clientHeight > 240;
+    if (!away) S.unreadBelow = 0;
+    j.hidden = !away; j.innerHTML = S.unreadBelow ? `↓ ${S.unreadBelow} new message${S.unreadBelow > 1 ? 's' : ''}` : '↓';
+    j.classList.toggle('badge', !!S.unreadBelow);
+  }
+  async function gotoMessage(id) {
+    let el = $(`[data-msg="${id}"]`);
+    let tries = 0;
+    while (!el && S.hasMore && tries++ < 6) { await loadOlder(); el = $(`[data-msg="${id}"]`); }
+    if (!el) { toast('That message is no longer available.'); return; }
+    el.scrollIntoView({block: 'center', behavior: 'smooth'}); el.classList.add('flash'); setTimeout(() => el.classList.remove('flash'), 1800);
+  }
+
+  // ---------- composer ----------
+  function autosize() { const i = $('#vcx-input'); if (!i) return; i.style.height = 'auto'; i.style.height = Math.min(i.scrollHeight, 150) + 'px'; updateSend(); }
+  function updateSend() { const i = $('#vcx-input'), b = $('#vcx-send'); if (!i || !b) return; b.classList.toggle('ready', !!(i.value.trim() || S.files.length)); }
+  const releaseFile = (f) => { if (f.preview) URL.revokeObjectURL(f.preview); };
+  function addFiles(list) {
+    for (const file of Array.from(list || [])) {
+      if (S.files.length >= MAX_FILES) { toast(`You can attach up to ${MAX_FILES} files.`, 'error'); break; }
+      if (file.size > MAX_BYTES) { toast(`${file.name} is larger than 20 MB.`, 'error'); continue; }
+      S.files.push({file, type: file.type || '', preview: (file.type || '').startsWith('image/') ? URL.createObjectURL(file) : ''});
+    }
+    renderBars(); updateSend();
+  }
+  function renderBars() {
+    const el = $('#vcx-bars'); if (!el) return; let html = '';
+    if (S.edit) html += `<div class="vcx-bar"><div><b>Editing message</b><span>${esc(S.edit.body)}</span></div><button type="button" data-act="cancel-bar" aria-label="Cancel editing">${icons.close}</button></div>`;
+    else if (S.reply) html += `<div class="vcx-bar"><div><b>Replying to ${esc(S.reply.user_name)}</b><span>${esc(S.reply.body || '📎 Attachment')}</span></div><button type="button" data-act="cancel-bar" aria-label="Cancel reply">${icons.close}</button></div>`;
+    if (S.files.length) html += `<div class="vcx-chips">${S.files.map((f, i) => `<span class="vcx-chip">${f.preview ? `<img src="${esc(f.preview)}" alt="">` : `<i>${icons.file}</i>`}<span>${esc(f.file.name)}</span><button type="button" data-rmfile="${i}" aria-label="Remove ${esc(f.file.name)}">${icons.close}</button></span>`).join('')}</div>`;
+    el.innerHTML = html;
+  }
+  async function submitComposer() {
+    if (!S.active) return; const input = $('#vcx-input'); const body = input.value.trim();
+    if (S.edit) {
+      if (!body) { toast('A message cannot be empty.', 'error'); return; }
+      const edit = S.edit; S.edit = null; input.value = ''; autosize(); renderBars();
+      try { await api(`connect/conversations/${S.active.id}/messages/${edit.id}`, {method: 'PATCH', body: {body}}); S.sig = ''; await loadThread(); } catch (e) { toast(e.message, 'error'); }
+      return;
+    }
+    if (!body && !S.files.length) return;
+    const p = {id: 'p' + Date.now(), body, files: S.files.slice(), parentId: S.reply ? S.reply.id : 0, status: 'sending', conv: S.active.id};
+    S.pending.push(p); S.files = []; S.reply = null; input.value = ''; autosize(); renderBars(); renderMessages({}); send(p);
+  }
+  async function send(p) {
+    p.status = 'sending';
+    const fd = new FormData(); fd.append('body', p.body); if (p.parentId) fd.append('parentId', p.parentId); p.files.forEach((f, i) => fd.append('file' + i, f.file, f.file.name));
+    try {
+      await api(`connect/conversations/${p.conv}/send`, {method: 'POST', body: fd});
+      p.files.forEach(releaseFile); S.pending = S.pending.filter((x) => x !== p); S.sig = '';
+      if (S.active && S.active.id === p.conv) { await loadThread(); const sc = $('#vcx-scroll'); if (sc) sc.scrollTop = sc.scrollHeight; }
+      refreshListSoon();
+    } catch (e) { p.status = 'failed'; p.error = e.message; if (S.active && S.active.id === p.conv) renderMessages({}); }
+  }
+  let listSoon = 0; function refreshListSoon() { clearTimeout(listSoon); listSoon = setTimeout(async () => { try { S.convs = await api('connect/conversations'); renderList(false); } catch (e) { /* ignore */ } }, 400); }
+  function pingTyping() {
+    if (!S.active || Date.now() - S.lastTypingPing < 3000) return; S.lastTypingPing = Date.now();
+    api(`connect/conversations/${S.active.id}/typing`, {method: 'POST', body: {}}).catch(() => {});
+  }
+
+  // mentions
+  function mentionState() {
+    const i = $('#vcx-input'); if (!i) return null; const pos = i.selectionStart; const before = i.value.slice(0, pos);
+    const m = before.match(/(^|\s)@([\p{L}\p{N}_ .-]{0,30})$/u); if (!m || isDirect(S.active)) return null;
+    return {start: pos - m[2].length - 1, query: m[2].toLowerCase()};
+  }
+  function updateMentions() {
+    const layer = $('#vcx-layer'); layer.querySelector('.vcx-mentions')?.remove();
+    const st = mentionState(); if (!st) return;
+    const people = (S.active.members || []).filter((m) => Number(m.id) !== S.me && m.name.toLowerCase().includes(st.query.trim())).slice(0, 6); if (!people.length) return;
+    const box = document.createElement('div'); box.className = 'vcx-mentions';
+    box.innerHTML = people.map((m, i) => `<button type="button" data-mention="${esc(m.name)}" class="${i === 0 ? 'on' : ''}">${avatar(m.name, m.avatar_url, 'sm')}<span>${esc(m.name)}</span></button>`).join('');
+    const bars = $('#vcx-composer'); const r = bars.getBoundingClientRect(); const host = layer.getBoundingClientRect();
+    box.style.left = (r.left - host.left + 56) + 'px'; box.style.bottom = (host.bottom - r.top + 6) + 'px'; layer.appendChild(box);
+  }
+  function insertMention(name) {
+    const i = $('#vcx-input'), st = mentionState(); if (!st) return;
+    i.value = i.value.slice(0, st.start) + '@' + name + ' ' + i.value.slice(i.selectionStart); const pos = st.start + name.length + 2; i.setSelectionRange(pos, pos); $('#vcx-layer .vcx-mentions')?.remove(); i.focus(); autosize();
+  }
+
+  // ---------- menus, sheets ----------
+  function closeLayer() { const l = $('#vcx-layer'); if (l) { l.innerHTML = ''; l.onclick = null; l.onsubmit = null; } }
+  function sheet(html, cls = '') {
+    const layer = $('#vcx-layer'); layer.onclick = null; layer.onsubmit = null; layer.innerHTML = `<div class="vcx-scrim" data-act="dismiss"></div><div class="vcx-sheet ${cls}" role="dialog" aria-modal="true">${html}</div>`;
+    const first = layer.querySelector('input,textarea,button.vcx-primary'); if (first && !coarse()) first.focus();
+  }
+  function msgById(id) { return S.msgs.find((m) => Number(m.id) === Number(id)); }
+  function openMenu(id, anchor) {
+    const m = msgById(id); if (!m || m.deleted) return; const mine = m.user_id === S.me; const admin = !!window.VPMIsAdmin || !!$('#vtp-app[data-role="admin"]');
+    const quick = QUICK.map((e) => `<button type="button" class="vcx-q" data-reactq="${m.id}" data-e="${esc(e)}">${e}</button>`).join('') + `<button type="button" class="vcx-q more" data-moreemoji="${m.id}" aria-label="More emoji">${icons.plus}</button>`;
+    const items = [['reply', 'Reply', icons.reply], ['copy', 'Copy text', icons.file], ['forward', 'Forward', icons.send]];
+    if (mine && m.body) items.push(['edit', 'Edit', icons.file]); if (mine || admin) items.push(['delete', 'Delete', icons.close, 'danger']);
+    const inner = `<div class="vcx-quickrow">${quick}</div><div class="vcx-menu">${items.filter((i) => i[0] !== 'copy' || m.body).map(([k, l, ic, c]) => `<button type="button" class="${c || ''}" data-mact="${k}" data-id="${m.id}"><i>${ic}</i>${l}</button>`).join('')}</div>`;
+    if (mobile() || !anchor) { sheet(inner, 'bottom compact'); return; }
+    const layer = $('#vcx-layer'); layer.onclick = null; layer.onsubmit = null; layer.innerHTML = `<div class="vcx-scrim clear" data-act="dismiss"></div><div class="vcx-pop" role="menu">${inner}</div>`;
+    const pop = $('.vcx-pop', layer), r = anchor.getBoundingClientRect(), host = layer.getBoundingClientRect(); let top = r.bottom - host.top + 6; const h = pop.offsetHeight;
+    if (top + h > host.height - 8) top = Math.max(8, r.top - host.top - h - 6);
+    let left = mine ? r.right - host.left - pop.offsetWidth : r.left - host.left; left = Math.max(8, Math.min(left, host.width - pop.offsetWidth - 8));
+    pop.style.top = top + 'px'; pop.style.left = left + 'px';
+  }
+  function emojiPicker(onPick, anchor) {
+    const grid = `<div class="vcx-emoji-grid">${EMOJI.map((e) => `<button type="button" data-pick="${esc(e)}">${e}</button>`).join('')}</div>`;
+    const layer = $('#vcx-layer');
+    if (mobile()) { sheet(grid, 'bottom emoji'); } else {
+      layer.onclick = null; layer.onsubmit = null; layer.innerHTML = `<div class="vcx-scrim clear" data-act="dismiss"></div><div class="vcx-pop emoji">${grid}</div>`;
+      const pop = $('.vcx-pop', layer), r = anchor.getBoundingClientRect(), host = layer.getBoundingClientRect();
+      pop.style.left = Math.max(8, Math.min(r.right - host.left - pop.offsetWidth, host.width - pop.offsetWidth - 8)) + 'px'; pop.style.top = Math.max(8, r.top - host.top - pop.offsetHeight - 8) + 'px';
+    }
+    layer.onclick = (ev) => { const b = ev.target.closest('[data-pick]'); if (b) { onPick(b.dataset.pick); closeLayer(); layer.onclick = null; } };
+  }
+  async function react(id, emoji) {
+    try { await api(`connect/messages/${id}/reactions`, {method: 'POST', body: {reaction: emojiName(emoji)}}); S.sig = ''; await loadThread(); } catch (e) { toast(e.message, 'error'); }
+  }
+  function confirmBox(title, text, okLabel, onOk) {
+    sheet(`<h3>${esc(title)}</h3><p class="vcx-muted">${esc(text)}</p><div class="vcx-actions"><button type="button" class="vcx-btn" data-act="dismiss">Cancel</button><button type="button" class="vcx-btn danger vcx-primary" id="vcx-ok">${esc(okLabel)}</button></div>`, 'dialog');
+    $('#vcx-ok').addEventListener('click', () => { closeLayer(); onOk(); });
+  }
+  function forwardSheet(id) {
+    const m = msgById(id); if (!m) return;
+    sheet(`<h3>Forward to…</h3><div class="vcx-fwd">${S.convs.map((c) => `<button type="button" data-fwd="${c.id}">${convAv(c, 'sm')}<span>${esc(convTitle(c))}</span></button>`).join('')}</div>`, 'dialog scroll');
+    $('#vcx-layer').onclick = async (ev) => {
+      const b = ev.target.closest('[data-fwd]'); if (!b) return; const target = Number(b.dataset.fwd); closeLayer(); $('#vcx-layer').onclick = null;
+      const fd = new FormData(); fd.append('body', `↪ Forwarded from ${m.user_name}:\n${m.body || '(attachment)'}`);
+      try { await api(`connect/conversations/${target}/send`, {method: 'POST', body: fd}); toast('Message forwarded'); refreshListSoon(); } catch (e) { toast(e.message, 'error'); }
+    };
+  }
+  function lightbox(url, name) {
+    const layer = $('#vcx-layer'); layer.onclick = null; layer.onsubmit = null; layer.innerHTML = `<div class="vcx-lightbox" data-act="dismiss"><button type="button" class="vcx-icon-btn light" data-act="dismiss" aria-label="Close">${icons.close}</button><img src="${esc(url)}" alt="${esc(name)}"><a class="vcx-btn light" href="${esc(url)}" download="${esc(name)}">Download</a></div>`;
+  }
+  function newChatSheet() {
+    const people = S.members.filter((m) => Number(m.id) !== S.me);
+    sheet(`<div class="vcx-seg"><button type="button" class="on" data-tab="direct">Direct message</button><button type="button" data-tab="group">New group</button></div>
+      <div id="vcx-newbody"></div>`, 'dialog scroll');
+    const body = $('#vcx-newbody');
+    const drawDirect = () => { body.innerHTML = `<div class="vcx-search sm"><span>${icons.search}</span><input id="vcx-psearch" placeholder="Find a teammate" autocomplete="off"></div><div class="vcx-people" id="vcx-people"></div>`;
+      const draw = (q = '') => { $('#vcx-people').innerHTML = people.filter((m) => m.name.toLowerCase().includes(q)).map((m) => `<button type="button" data-dm="${m.id}">${avatar(m.name, m.avatar_url)}<span><strong>${esc(m.name)}</strong><small>${esc(m.email || '')}</small></span></button>`).join('') || '<div class="vcx-note">No teammates found</div>'; };
+      draw(); $('#vcx-psearch').addEventListener('input', (e) => draw(e.target.value.toLowerCase())); };
+    const drawGroup = () => { body.innerHTML = `<form id="vcx-groupform"><label class="vcx-field">Group name<input name="title" placeholder="e.g. Design team" maxlength="80" required></label><div class="vcx-field">Members</div><div class="vcx-people select">${people.map((m) => `<label><input type="checkbox" name="m" value="${m.id}">${avatar(m.name, m.avatar_url)}<span><strong>${esc(m.name)}</strong><small>${esc(m.email || '')}</small></span><i class="tick">${icons.check}</i></label>`).join('')}</div><div class="vcx-actions"><button type="button" class="vcx-btn" data-act="dismiss">Cancel</button><button type="submit" class="vcx-btn primary">Create group</button></div></form>`; };
+    drawDirect();
+    $('#vcx-layer').onclick = async (ev) => {
+      const tab = ev.target.closest('[data-tab]'); if (tab) { $$('.vcx-seg button').forEach((b) => b.classList.toggle('on', b === tab)); tab.dataset.tab === 'direct' ? drawDirect() : drawGroup(); return; }
+      const dm = ev.target.closest('[data-dm]'); if (dm) { try { const r = await api('connect/conversations', {method: 'POST', body: {type: 'direct', title: '', memberIds: [Number(dm.dataset.dm)]}}); closeLayer(); await reloadAndOpen(r.id); } catch (e) { toast(e.message, 'error'); } }
+    };
+    $('#vcx-layer').onsubmit = async (ev) => {
+      ev.preventDefault(); const form = ev.target; const ids = $$('input[name=m]:checked', form).map((i) => Number(i.value));
+      if (!ids.length) { toast('Choose at least one teammate.', 'error'); return; }
+      const btn = $('button[type=submit]', form); btn.disabled = true;
+      try { const r = await api('connect/conversations', {method: 'POST', body: {type: 'group', title: form.title.value.trim(), memberIds: ids}}); closeLayer(); await reloadAndOpen(r.id); } catch (e) { btn.disabled = false; toast(e.message, 'error'); }
+    };
+  }
+  async function reloadAndOpen(id) { S.convs = await api('connect/conversations'); renderList(); await openConversation(id); }
+
+  function infoSheet() {
+    const c = S.active; if (!c) return; const direct = isDirect(c), manage = !!c.can_manage;
+    const inGroup = new Set((c.members || []).map((m) => Number(m.id)));
+    const addable = S.members.filter((m) => !inGroup.has(Number(m.id)));
+    sheet(`<div class="vcx-info-head">${convAv(c, 'lg')}<h3>${esc(convTitle(c))}</h3><p class="vcx-muted">${direct ? esc(other(c)?.email || 'Direct message') : `${(c.members || []).length} members`}</p></div>
+      ${manage ? `<form id="vcx-rename" class="vcx-rename"><input name="title" value="${esc(c.title)}" maxlength="80" aria-label="Group name"><button class="vcx-btn small primary">Rename</button></form>` : ''}
+      <div class="vcx-field">Members</div><div class="vcx-people">${(c.members || []).map((m) => `<div class="vcx-person">${avatar(m.name, m.avatar_url)}<span><strong>${esc(m.name)}${Number(m.id) === S.me ? ' (you)' : ''}</strong><small>${esc(m.email || '')}</small></span>${manage && Number(m.id) !== S.me && c.type !== 'general' ? `<button type="button" class="vcx-link danger" data-rmmember="${m.id}">Remove</button>` : ''}</div>`).join('')}</div>
+      ${manage && addable.length ? `<div class="vcx-field">Add people</div><div class="vcx-people">${addable.map((m) => `<button type="button" data-addmember="${m.id}">${avatar(m.name, m.avatar_url)}<span><strong>${esc(m.name)}</strong><small>${esc(m.email || '')}</small></span><i class="vcx-plus">${icons.plus}</i></button>`).join('')}</div>` : ''}
+      <div class="vcx-actions col"><button type="button" class="vcx-btn" data-act="pin-sheet">${c.pinned ? 'Unpin conversation' : 'Pin conversation'}</button>${!direct && c.type !== 'general' ? '<button type="button" class="vcx-btn danger" data-act="leave">Leave group</button>' : ''}<button type="button" class="vcx-btn" data-act="dismiss">Done</button></div>`, 'dialog scroll');
+    const layer = $('#vcx-layer');
+    $('#vcx-rename')?.addEventListener('submit', async (ev) => { ev.preventDefault(); try { await api(`connect/conversations/${c.id}`, {method: 'PATCH', body: {title: ev.target.title.value}}); toast('Group renamed'); await afterGroupChange(c.id, true); } catch (e) { toast(e.message, 'error'); } });
+    layer.onclick = async (ev) => {
+      const add = ev.target.closest('[data-addmember]'), rm = ev.target.closest('[data-rmmember]');
+      try {
+        if (add) { await api(`connect/conversations/${c.id}/members`, {method: 'POST', body: {memberIds: [Number(add.dataset.addmember)]}}); await afterGroupChange(c.id, true); }
+        else if (rm) { await api(`connect/conversations/${c.id}/members/${rm.dataset.rmmember}`, {method: 'DELETE'}); await afterGroupChange(c.id, true); }
+      } catch (e) { toast(e.message, 'error'); }
+    };
+  }
+  async function afterGroupChange(id, reopen) { S.convs = await api('connect/conversations'); const c = S.convs.find((x) => x.id === id); if (c) S.active = c; renderList(false); renderChatHead(); if (reopen) infoSheet(); }
+  async function togglePin() {
+    if (!S.active) return; try { const r = await api(`connect/conversations/${S.active.id}/pin`, {method: 'POST', body: {}}); const c = S.convs.find((x) => x.id === S.active.id); if (c) c.pinned = r.pinned; S.active.pinned = r.pinned; renderList(false); renderChatHead(); toast(r.pinned ? 'Conversation pinned' : 'Conversation unpinned'); } catch (e) { toast(e.message, 'error'); }
+  }
+
+  // ---------- events ----------
+  function bindShell(root) {
+    root.addEventListener('click', onClick);
+    root.addEventListener('contextmenu', (ev) => { const b = ev.target.closest('[data-menu]'); if (b && !ev.target.closest('a,button.vcx-quote,.vcx-react,.vcx-img')) { ev.preventDefault(); openMenu(b.dataset.menu, b); } });
+    const input = $('#vcx-input', root);
+    input.addEventListener('input', () => { autosize(); if (input.value.trim()) pingTyping(); updateMentions(); });
+    input.addEventListener('keyup', (ev) => { if (!['ArrowUp', 'ArrowDown', 'Enter', 'Tab', 'Escape'].includes(ev.key)) updateMentions(); });
+    input.addEventListener('keydown', (ev) => {
+      const pop = $('.vcx-mentions');
+      if (pop && (ev.key === 'Enter' || ev.key === 'Tab')) { const on = $('button.on', pop) || $('button', pop); if (on) { ev.preventDefault(); insertMention(on.dataset.mention); return; } }
+      if (pop && (ev.key === 'ArrowDown' || ev.key === 'ArrowUp')) { ev.preventDefault(); const btns = $$('button', pop); const i = btns.findIndex((b) => b.classList.contains('on')); btns[i]?.classList.remove('on'); btns[(i + (ev.key === 'ArrowDown' ? 1 : -1) + btns.length) % btns.length].classList.add('on'); return; }
+      if (ev.key === 'Escape') { if (pop) { pop.remove(); return; } if (S.edit || S.reply) { S.edit = null; S.reply = null; input.value = ''; autosize(); renderBars(); } return; }
+      if (ev.key === 'Enter' && !ev.shiftKey && !coarse() && !ev.isComposing) { ev.preventDefault(); submitComposer(); }
+      if (ev.key === 'ArrowUp' && !input.value && !S.edit) { const last = [...S.msgs].reverse().find((m) => m.user_id === S.me && !m.deleted && m.body); if (last) { ev.preventDefault(); startEdit(last); } }
+    });
+    input.addEventListener('paste', (ev) => { const files = Array.from(ev.clipboardData?.files || []); if (files.length) { ev.preventDefault(); addFiles(files); } });
+    $('#vcx-composer', root).addEventListener('submit', (ev) => { ev.preventDefault(); submitComposer(); });
+    $('#vcx-file', root).addEventListener('change', (ev) => { addFiles(ev.target.files); ev.target.value = ''; });
+    const search = $('#vcx-search', root);
+    search.addEventListener('input', () => {
+      S.q = search.value.trim(); S.searchRes = null; renderList(); clearTimeout(S.searchTimer);
+      if (S.q.length >= 2) S.searchTimer = setTimeout(async () => { const q = S.q; try { const r = await api('connect/search?q=' + encodeURIComponent(q)); if (S.q === q) { S.searchRes = r; renderList(); } } catch (e) { /* ignore */ } }, 300);
+    });
+    const sc = $('#vcx-scroll', root); sc.addEventListener('scroll', updateJump, {passive: true});
+    $('#vcx-jump', root).addEventListener('click', () => { sc.scrollTo({top: sc.scrollHeight, behavior: 'smooth'}); });
+    // long-press for touch
+    let lp = 0, lpMoved = false;
+    sc.addEventListener('touchstart', (ev) => { const b = ev.target.closest('[data-menu]'); if (!b || ev.target.closest('a,.vcx-img,.vcx-react,.vcx-quote')) return; lpMoved = false; lp = setTimeout(() => { if (!lpMoved) { navigator.vibrate?.(10); openMenu(b.dataset.menu, b); } }, 450); }, {passive: true});
+    sc.addEventListener('touchmove', () => { lpMoved = true; clearTimeout(lp); }, {passive: true});
+    sc.addEventListener('touchend', () => clearTimeout(lp)); sc.addEventListener('touchcancel', () => clearTimeout(lp));
+    // drag & drop
+    const app = $('.vcx-app', root), drop = $('#vcx-drop', root); let depth = 0;
+    app.addEventListener('dragenter', (ev) => { if (ev.dataTransfer?.types?.includes('Files') && S.active) { depth++; drop.hidden = false; } });
+    app.addEventListener('dragleave', () => { depth = Math.max(0, depth - 1); if (!depth) drop.hidden = true; });
+    app.addEventListener('dragover', (ev) => { if (ev.dataTransfer?.types?.includes('Files')) ev.preventDefault(); });
+    app.addEventListener('drop', (ev) => { ev.preventDefault(); depth = 0; drop.hidden = true; if (S.active) addFiles(ev.dataTransfer.files); });
+  }
+  function startEdit(m) { S.edit = m; S.reply = null; const i = $('#vcx-input'); i.value = m.body; renderBars(); autosize(); i.focus(); i.setSelectionRange(i.value.length, i.value.length); }
+
+  async function onClick(ev) {
+    const t = ev.target;
+    const act = t.closest('[data-act]');
+    if (act) {
+      const a = act.dataset.act;
+      if (a === 'dismiss') { if (act.classList.contains('vcx-lightbox') && t.closest('img,a')) return; closeLayer(); return; }
+      if (a === 'close') { closeOverlay(); return; }
+      if (a === 'new') { newChatSheet(); return; }
+      if (a === 'back') { setView('list'); S.active = null; S.sig = ''; clearTimeout(S.threadTimer); renderList(false); $('#vcx-chat').hidden = true; $('#vcx-empty').hidden = false; return; }
+      if (a === 'info') { infoSheet(); return; }
+      if (a === 'pin') { togglePin(); return; }
+      if (a === 'pin-sheet') { closeLayer(); togglePin(); return; }
+      if (a === 'leave') { const c = S.active; confirmBox('Leave this group?', 'You will stop receiving messages from it. Someone will need to add you back.', 'Leave', async () => { try { await api(`connect/conversations/${c.id}/members/${S.me}`, {method: 'DELETE'}); S.active = null; S.convs = await api('connect/conversations'); renderList(); $('#vcx-chat').hidden = true; $('#vcx-empty').hidden = false; setView('list'); toast('You left the group'); } catch (e) { toast(e.message, 'error'); } }); return; }
+      if (a === 'attach') { $('#vcx-file').click(); return; }
+      if (a === 'emoji') { emojiPicker((e) => { const i = $('#vcx-input'); const p = i.selectionStart ?? i.value.length; i.value = i.value.slice(0, p) + e + i.value.slice(i.selectionEnd ?? p); i.focus(); const np = p + e.length; i.setSelectionRange(np, np); autosize(); }, act); return; }
+      if (a === 'cancel-bar') { S.edit = null; S.reply = null; $('#vcx-input').value = ''; autosize(); renderBars(); return; }
+    }
+    const openBtn = t.closest('[data-open]'); if (openBtn) { await openConversation(Number(openBtn.dataset.open), {jumpTo: Number(openBtn.dataset.jump) || 0}); return; }
+    const filt = t.closest('[data-filter]'); if (filt) { S.filter = filt.dataset.filter; $$('.vcx-filters button').forEach((b) => b.classList.toggle('on', b === filt)); renderList(); return; }
+    const more = t.closest('#vcx-older'); if (more) { loadOlder(); return; }
+    const lb = t.closest('[data-lightbox]'); if (lb) { lightbox(lb.dataset.lightbox, lb.dataset.name); return; }
+    const go = t.closest('[data-goto]'); if (go) { gotoMessage(Number(go.dataset.goto)); return; }
+    const rc = t.closest('[data-react]'); if (rc) { react(rc.dataset.react, emojiFrom(rc.dataset.name)); return; }
+    const quick = t.closest('[data-quick]'); if (quick) { openMenu(quick.dataset.quick, quick); return; }
+    const menuBtn = t.closest('[data-menu-btn]'); if (menuBtn) { openMenu(menuBtn.dataset.menuBtn, menuBtn); return; }
+    const rep = t.closest('[data-replyto]'); if (rep) { const m = msgById(rep.dataset.replyto); if (m) { S.reply = m; S.edit = null; renderBars(); $('#vcx-input').focus(); } return; }
+    const rq = t.closest('[data-reactq]'); if (rq) { closeLayer(); react(rq.dataset.reactq, rq.dataset.e); return; }
+    const me = t.closest('[data-moreemoji]'); if (me) { const id = me.dataset.moreemoji; emojiPicker((e) => react(id, e), me); return; }
+    const mact = t.closest('[data-mact]'); if (mact) {
+      const m = msgById(mact.dataset.id); const k = mact.dataset.mact; closeLayer(); if (!m) return;
+      if (k === 'reply') { S.reply = m; S.edit = null; renderBars(); $('#vcx-input').focus(); }
+      else if (k === 'copy') { try { await navigator.clipboard.writeText(m.body); toast('Copied'); } catch (e) { toast('Could not copy', 'error'); } }
+      else if (k === 'forward') forwardSheet(m.id);
+      else if (k === 'edit') startEdit(m);
+      else if (k === 'delete') confirmBox('Delete this message?', 'It will be removed for everyone in the conversation, including any attachments.', 'Delete', async () => { try { await api(`connect/conversations/${S.active.id}/messages/${m.id}`, {method: 'DELETE'}); S.sig = ''; await loadThread(); refreshListSoon(); } catch (e) { toast(e.message, 'error'); } });
+      return;
+    }
+    const rm = t.closest('[data-rmfile]'); if (rm) { const [f] = S.files.splice(Number(rm.dataset.rmfile), 1); if (f) releaseFile(f); renderBars(); updateSend(); return; }
+    const mn = t.closest('[data-mention]'); if (mn) { insertMention(mn.dataset.mention); return; }
+    const retry = t.closest('[data-retry]'); if (retry) { const p = S.pending.find((x) => x.id === retry.dataset.retry); if (p) { p.status = 'sending'; renderMessages({}); send(p); } return; }
+    const disc = t.closest('[data-discard]'); if (disc) { S.pending = S.pending.filter((x) => x.id !== disc.dataset.discard); renderMessages({keepScroll: true}); return; }
+  }
+
+  document.addEventListener('keydown', (ev) => { if (!S.open || ev.key !== 'Escape') return; const layer = $('#vcx-layer'); if (layer && layer.children.length) { layer.innerHTML = ''; layer.onclick = null; layer.onsubmit = null; return; } if (!$('#vcx-input')?.value && !S.edit && !S.reply) closeOverlay(); });
+  document.addEventListener('visibilitychange', () => { if (S.open && document.visibilityState === 'visible') refreshNow(); });
+  window.addEventListener('focus', () => { if (S.open) refreshNow(); });
+  window.addEventListener('resize', sizeToViewport);
+  if (window.visualViewport) { visualViewport.addEventListener('resize', sizeToViewport); visualViewport.addEventListener('scroll', sizeToViewport); }
+
+  // take over the entry points used by the launcher, nav link and bell
+  const api2 = {open: openOverlay, close: closeOverlay, openFromRoute};
+  window.VPMConnect = api2;
+  ['VPMOpenConnectOverlay', 'VPMCloseConnectOverlay'].forEach((name, i) => Object.defineProperty(window, name, {configurable: true, get: () => (i ? closeOverlay : openOverlay), set: () => {}}));
+  if ((location.hash || '').slice(1).split('?')[0] === 'connect') { const go = () => (window.VPM && document.getElementById('vtp-view') ? openFromRoute() : setTimeout(go, 80)); go(); }
 })();

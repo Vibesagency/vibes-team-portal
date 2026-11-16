@@ -213,7 +213,7 @@
       } catch (error) { /* Keep the launcher quiet if the optional unread check is unavailable. */ }
       scheduleUnreadCheck();
     };
-    window.addEventListener('hashchange', () => { if (routeIsConnect()) updateUnreadBell(0); });
+    VTPR.onHashChange(() => { if (routeIsConnect()) updateUnreadBell(0); });
     window.addEventListener('vpm-connect-unread', event => updateUnreadBell(event.detail && event.detail.count));
     window.setTimeout(checkUnread, 1800);
     document.body.appendChild(launcher);
@@ -1790,7 +1790,7 @@
     addNavLink();
     if (location.hash.split('?')[0] === '#payslips' && !document.querySelector('.vtp-payslips-page')) window.setTimeout(page, 80);
   };
-  window.addEventListener('hashchange', watch);
+  VTPR.onHashChange(watch);
   [300, 1000, 2000, 4000].forEach(delay => window.setTimeout(watch, delay));
   const nav = document.querySelector('#vtp-nav');
   if (nav) new MutationObserver(addNavLink).observe(nav, { childList: true, subtree: true });
@@ -2004,7 +2004,7 @@
   const schedule = () => { clearTimeout(timer); timer = setTimeout(enhance, 160); };
   const observer = new MutationObserver(schedule);
   [document.querySelector('#vtp-view'), document.querySelector('#vtp-drawer')].filter(Boolean).forEach(root => observer.observe(root, { childList: true, subtree: true }));
-  window.addEventListener('hashchange', schedule);
+  VTPR.onHashChange(schedule);
   setTimeout(enhance, 500);
 })();
 
@@ -2073,7 +2073,7 @@
   document.addEventListener('change', event => {
     if (event.target.matches('[name="hrEmploymentStatus"],[name="role"]')) schedule();
   });
-  window.addEventListener('hashchange', schedule);
+  VTPR.onHashChange(schedule);
   setTimeout(enhance, 650);
 })();
 
@@ -2127,7 +2127,7 @@
   }, true);
   const root = document.querySelector('#vtp-view');
   if (root) new MutationObserver(() => setTimeout(enhanceLeave, 80)).observe(root, { childList: true, subtree: true });
-  window.addEventListener('hashchange', () => setTimeout(enhanceLeave, 150));
+  VTPR.onHashChange(() => setTimeout(enhanceLeave, 150));
   setTimeout(enhanceLeave, 500);
 })();
 
@@ -2159,7 +2159,7 @@
       more.setAttribute('aria-expanded', String(open));
     });
     nav.addEventListener('click', event => { if (event.target.closest('a')) close(); });
-    window.addEventListener('hashchange', close);
+    VTPR.onHashChange(close);
     document.addEventListener('keydown', event => { if (event.key === 'Escape') close(); });
   };
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', ready); else ready();
@@ -2193,6 +2193,6 @@
     }
   };
   const scan = () => document.querySelectorAll('[data-mapped-path-status][data-folder]:not([data-done])').forEach(fill);
-  const start = () => { scan(); new MutationObserver(scan).observe(document.body, { childList: true, subtree: true }); };
+  const start = () => { scan(); VTPR.watch(scan); };
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start); else start();
 })();

@@ -1606,7 +1606,13 @@
   });
 
   $('#vtp-notification-button').addEventListener('click', notifications);
-  window.addEventListener('hashchange', route);
+  // Registered with VTPR.onRoute (the one place that decides what renders for the current
+  // hash) rather than a raw hashchange listener. This is the fallback router: it always
+  // claims the route, so it must register after the modules plugin's own onRoute call,
+  // which checks its own narrower route set first. If VTPR isn't present for some reason
+  // (modules plugin deactivated), fall back to a plain hashchange listener so routing still
+  // works.
+  if (window.VTPR) { window.VTPR.onRoute(() => { route(); return true; }); } else { window.addEventListener('hashchange', route); }
   // Returning to the portal after opening a file picker or another browser
   // window must not re-run the current route. The old focus/visibility
   // listeners rebuilt the content-management view as soon as the window

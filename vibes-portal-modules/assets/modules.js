@@ -6,12 +6,22 @@
  * how often the browser re-checks the page. New modules should register
  * here (VTPR.watch / VTPR.onHashChange) rather than add another observer. */
 window.VTPR = window.VTPR || (() => {
-  const watchers = []; const hashFns = [];
+  const watchers = []; const hashFns = []; const routeResolvers = [];
   let queued = false;
   const flush = () => { queued = false; watchers.forEach((fn) => { try { fn(); } catch (e) {} }); };
   new MutationObserver(() => { if (!queued) { queued = true; queueMicrotask(flush); } }).observe(document.body, {childList: true, subtree: true});
-  window.addEventListener('hashchange', () => { hashFns.forEach((fn) => { try { fn(); } catch (e) {} }); });
-  return { watch(fn) { watchers.push(fn); }, onHashChange(fn) { hashFns.push(fn); } };
+  window.addEventListener('hashchange', () => {
+    hashFns.forEach((fn) => { try { fn(); } catch (e) {} });
+    // The one place that decides what renders for the current hash. Resolvers run in
+    // registration order; the first one that returns a truthy value "claims" the route
+    // and stops the rest from running. Register the more specific router first.
+    for (const fn of routeResolvers) {
+      let claimed = false;
+      try { claimed = !!fn(); } catch (e) {}
+      if (claimed) break;
+    }
+  });
+  return { watch(fn) { watchers.push(fn); }, onHashChange(fn) { hashFns.push(fn); }, onRoute(fn) { routeResolvers.push(fn); } };
 })();
 window.__VPM_MODULES_PRESENT__ = true;
 /* Vibes Portal Modules: same portal shell, same REST namespace, no separate app. */
@@ -672,7 +682,15 @@ async function renderCRM() {
       return;
     }
     installNav();
-    window.addEventListener('hashchange', (event) => { if (moduleRoutes.has(routeKey())) { event.stopImmediatePropagation(); renderModule(); } else clearPoll(); }, true);
+    // Registered with VTPR.onRoute, not a raw hashchange listener + stopImmediatePropagation:
+    // this and the base plugin's router (vibes-team-portal/portal.js) are now the only two
+    // routers, dispatched from the one place VTPR owns. This one is registered first (modules.js
+    // loads before portal.js), so module routes are checked before the base plugin's fallback.
+    window.VTPR.onRoute(() => {
+      if (!moduleRoutes.has(routeKey())) { clearPoll(); return false; }
+      renderModule();
+      return true;
+    });
     document.addEventListener('visibilitychange', schedulePoll);
     if (moduleRoutes.has(routeKey())) claimInitialModuleRoute();
   }

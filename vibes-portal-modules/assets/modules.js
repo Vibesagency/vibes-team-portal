@@ -1,3 +1,18 @@
+/* Shared page-change dispatcher. Every module below used to run its own
+ * MutationObserver on the whole page and its own hashchange listener, which
+ * is what made pages like My Day slow: a dozen+ observers were all redoing
+ * work on every DOM change at once. VTPR gives them one observer and one
+ * listener to share instead. Behaviour of each module is unchanged, only
+ * how often the browser re-checks the page. New modules should register
+ * here (VTPR.watch / VTPR.onHashChange) rather than add another observer. */
+window.VTPR = window.VTPR || (() => {
+  const watchers = []; const hashFns = [];
+  let queued = false;
+  const flush = () => { queued = false; watchers.forEach((fn) => { try { fn(); } catch (e) {} }); };
+  new MutationObserver(() => { if (!queued) { queued = true; requestAnimationFrame(flush); } }).observe(document.body, {childList: true, subtree: true});
+  window.addEventListener('hashchange', () => { hashFns.forEach((fn) => { try { fn(); } catch (e) {} }); });
+  return { watch(fn) { watchers.push(fn); }, onHashChange(fn) { hashFns.push(fn); } };
+})();
 window.__VPM_MODULES_PRESENT__ = true;
 /* Vibes Portal Modules: same portal shell, same REST namespace, no separate app. */
 /* similarity-async-fix-20261030 */
@@ -545,15 +560,15 @@ async function renderCRM() {
 
     const settingsView = () => {
       const allSectors = ['Beauty', 'Fashion', 'E-commerce', 'Coffee', 'Restaurants', 'Real estate', 'Clinics & wellness', 'Fitness', 'Hospitality', 'Startups'];
-      const allPlatforms = ['Mostaql', 'Khamsat', 'LinkedIn', 'X', 'Etimad tenders'];
+      const allPlatforms = ['Mostaql', 'Khamsat', 'LinkedIn', 'X', 'Etimad tenders', 'Upwork', 'Freelancer', 'GlobalTenders', 'FreeTender', 'BidsFactory', 'Company supplier portals'];
       const checks = (name, all, chosen) => all.map((v) => `<label class="vpc-check"><input type="checkbox" name="${name}" value="${esc(v)}"${chosen.includes(v) ? ' checked' : ''}><span>${esc(v)}</span></label>`).join('');
       return `<form id="vpc-settings" class="vpc-settings"><p class="vpc-muted">The research agent reads these settings every morning before it searches. Changes apply from the next morning's run.</p>
         <fieldset><legend>Sectors to search</legend><div class="vpc-checks">${checks('sectors', allSectors, settings.sectors || [])}</div></fieldset>
         <div class="vpc-two"><label class="vpc-field"><span>Include keywords</span><small>One per line, Arabic or English. The agent looks for news and posts using these.</small><textarea name="includeKeywords" rows="7" dir="auto">${esc((settings.includeKeywords || []).join('\n'))}</textarea></label>
         <label class="vpc-field"><span>Exclude keywords</span><small>One per line. Results mentioning these are skipped.</small><textarea name="excludeKeywords" rows="7" dir="auto">${esc((settings.excludeKeywords || []).join('\n'))}</textarea></label></div>
-        <label class="vpc-field"><span>Cities</span><small>One per line. Leave empty for all of Saudi Arabia.</small><textarea name="cities" rows="3">${esc((settings.cities || []).join('\n'))}</textarea></label>
+        <label class="vpc-field"><span>Cities</span><small>One per line: cities or countries. Leave empty for all of Saudi Arabia, the GCC and Lebanon.</small><textarea name="cities" rows="3">${esc((settings.cities || []).join('\n'))}</textarea></label>
         <fieldset><legend>Where to look for requests</legend><div class="vpc-checks">${checks('platforms', allPlatforms, settings.platforms || [])}</div></fieldset>
-        <div class="vpc-three"><label class="vpc-field"><span>New prospects per day</span><input type="number" name="prospectsPerDay" min="1" max="15" value="${esc(settings.prospectsPerDay)}"></label><label class="vpc-field"><span>Requests per day</span><input type="number" name="requestsPerDay" min="0" max="15" value="${esc(settings.requestsPerDay)}"></label><label class="vpc-field"><span>Minimum request budget (USD)</span><input type="number" name="minBudgetUsd" min="0" step="50" value="${esc(settings.minBudgetUsd)}"></label></div>
+        <div class="vpc-three"><label class="vpc-field"><span>New prospects per day</span><input type="number" name="prospectsPerDay" min="1" max="15" value="${esc(settings.prospectsPerDay)}"></label><label class="vpc-field"><span>Requests per day</span><small>No limit: the agent adds every qualifying request from the last 24 hours. Set 0 to turn requests off.</small><input type="number" name="requestsPerDay" min="0" max="15" value="${esc(settings.requestsPerDay)}"></label><label class="vpc-field"><span>Minimum request budget (USD)</span><input type="number" name="minBudgetUsd" min="0" step="50" value="${esc(settings.minBudgetUsd)}"></label></div>
         <label class="vpc-check big"><input type="checkbox" name="smallBrandsOnly"${settings.smallBrandsOnly ? ' checked' : ''}><span>Prefer small and mid-sized brands (skip big groups that already have agencies)</span></label>
         <label class="vpc-field"><span>Extra notes for the agent</span><small>Anything else to focus on, e.g. "Ramadan campaigns", "Lebanese brands entering KSA".</small><textarea name="notes" rows="3" dir="auto">${esc(settings.notes || '')}</textarea></label>
         <div class="vpc-actions"><button class="vpc-btn primary" type="submit">Save search settings</button></div>
@@ -951,7 +966,7 @@ async function renderCRM() {
   const other = (c) => (c.members || []).find((m) => Number(m.id) !== S.me);
   const isDirect = (c) => c.type === 'direct';
   const convTitle = (c) => isDirect(c) ? (other(c)?.name || c.title) : (c.title || 'Conversation');
-  const convAv = (c, size) => isDirect(c) ? avatar(other(c)?.name || c.title, other(c)?.avatar_url, size) : groupAv(size);
+  const convAv = (c, size) => isDirect(c) ? avatar(other(c)?.name || c.title, other(c)?.avatar_url, size) : (c.image_url ? `<span class="vcx-av ${size || ''}"><img src="${esc(c.image_url)}" alt="" loading="lazy"></span>` : groupAv(size));
   const tsOf = (m) => (m.ts ? m.ts * 1000 : new Date(String(m.created_at).replace(' ', 'T')).getTime());
   const fmtTime = (ms) => new Date(ms).toLocaleTimeString([], {hour: 'numeric', minute: '2-digit'});
   const dayKey = (ms) => { const d = new Date(ms); return `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`; };
@@ -1009,7 +1024,7 @@ async function renderCRM() {
       <aside class="vcx-side" aria-label="Conversations">
         <header class="vcx-side-head">
           <div class="vcx-brand"><span class="vcx-logo">${icons.chat}</span><div><strong>Vibes Connect</strong><small>Team chat</small></div></div>
-          <div class="vcx-head-actions"><button type="button" class="vcx-icon-btn primary" data-act="new" aria-label="Start a new chat" title="New chat">${icons.plus}</button><button type="button" class="vcx-icon-btn" data-act="close" aria-label="Close Vibes Connect" title="Close">${icons.close}</button></div>
+          <div class="vcx-head-actions"><button type="button" class="vcx-icon-btn primary" data-act="new" aria-label="Start a new chat" title="New chat">${icons.plus}</button><button type="button" class="vcx-icon-btn off" data-act="pushpref" hidden aria-label="Phone notifications" title="Phone notifications"><svg viewBox="0 0 24 24"><rect x="7" y="2.500" width="10" height="19" rx="2.500"/><path d="M11 18.500h2"/></svg></button><button type="button" class="vcx-icon-btn" data-act="mailpref" aria-label="Email alerts" title="Email alerts"><svg viewBox="0 0 24 24"><path d="M6 9a6 6 0 0 1 12 0c0 6 2 7 2 7H4s2-1 2-7M10 20a2 2 0 0 0 4 0"/></svg></button><button type="button" class="vcx-icon-btn" data-act="trash" hidden aria-label="Deleted chats" title="Deleted chats (admin)"><svg viewBox="0 0 24 24"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12M9 7V4h6v3"/></svg></button><button type="button" class="vcx-icon-btn" data-act="close" aria-label="Close Vibes Connect" title="Close">${icons.close}</button></div>
         </header>
         <div class="vcx-search"><span>${icons.search}</span><input id="vcx-search" type="search" placeholder="Search chats, people and messages" autocomplete="off" aria-label="Search"></div>
         <div class="vcx-filters" role="tablist">${[['all', 'All'], ['unread', 'Unread'], ['groups', 'Groups'], ['pinned', 'Pinned']].map(([k, l]) => `<button type="button" role="tab" data-filter="${k}" class="${S.filter === k ? 'on' : ''}">${l}<i data-count="${k}"></i></button>`).join('')}</div>
@@ -1169,7 +1184,40 @@ async function renderCRM() {
     rows.sort((a, b) => (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0) || String(b.sort_at || '').localeCompare(String(a.sort_at || '')));
     return rows;
   }
+  function trashSheet() {
+    api('connect/deleted').then((rows) => {
+      sheet(`<h3>Deleted chats</h3><p class="vcx-muted">Only administrators see this list. Restore brings a chat back for its members. Delete forever erases it and all its messages and files.</p><div class="vcx-trash">${rows.length ? rows.map((r) => `<div class="vcx-trash-row"><span><strong>${esc(r.title || 'Conversation')}</strong><small>${esc(r.type)} · ${r.messages} messages · ${r.members} members${r.deleted_at ? ' · deleted ' + esc(String(r.deleted_at).slice(0, 10)) : ''}</small></span><button type="button" class="vcx-btn small" data-restore="${r.id}">Restore</button><button type="button" class="vcx-btn small danger" data-purge="${r.id}" data-title="${esc(r.title || 'this chat')}">Delete forever</button></div>`).join('') : '<div class="vcx-note">No deleted chats.</div>'}</div><div class="vcx-actions"><button type="button" class="vcx-btn" data-act="dismiss">Done</button></div>`, 'dialog scroll');
+      $('#vcx-layer').onclick = async (ev) => {
+        const rs = ev.target.closest('[data-restore]'), pg = ev.target.closest('[data-purge]');
+        if (rs) { try { await api(`connect/deleted/${rs.dataset.restore}/restore`, {method: 'POST', body: {}}); S.convs = await api('connect/conversations'); renderList(false); toast('Chat restored'); trashSheet(); } catch (e) { toast(e.message, 'error'); } }
+        else if (pg) { const id = pg.dataset.purge; confirmBox(`Permanently delete “${pg.dataset.title}”?`, 'All its messages and files will be erased forever. This cannot be undone.', 'Delete forever', async () => { try { const r = await api(`connect/deleted/${id}`, {method: 'DELETE'}); toast(`Erased (${r.messages} messages)`); } catch (e) { toast(e.message, 'error'); } trashSheet(); }); }
+      };
+    }).catch((e) => toast(e.message, 'error'));
+  }
+  const pushSupported = () => 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;
+  const isStandalone = () => window.matchMedia('(display-mode: standalone)').matches || navigator.standalone;
+  const u8 = (s) => { const p = '='.repeat((4 - s.length % 4) % 4); const r = atob((s + p).replace(/-/g, '+').replace(/_/g, '/')); return Uint8Array.from(r, (c) => c.charCodeAt(0)); };
+  async function pushIsOn() { if (!pushSupported()) return false; const reg = await navigator.serviceWorker.getRegistration('/'); return !!(reg && await reg.pushManager.getSubscription()); }
+  function paintPush(on, n = 0) { const b = document.querySelector('#vcx-root [data-act="pushpref"]'); if (b) { b.hidden = !pushSupported(); b.classList.toggle('off', !on); b.title = on ? 'Phone notifications are on - tap to turn off' : 'Turn on phone notifications'; } else if (n < 20) setTimeout(() => paintPush(on, n + 1), 400); }
+  async function togglePush() {
+    try {
+      if (!pushSupported()) { toast('This browser does not support notifications', 'error'); return; }
+      const reg = await navigator.serviceWorker.ready; const cur = await reg.pushManager.getSubscription();
+      if (cur) { await api('connect/push-unsubscribe', {method: 'POST', body: {endpoint: cur.endpoint}}); await cur.unsubscribe(); paintPush(false); toast('Phone notifications turned off'); return; }
+      if (/iphone|ipad|ipod/i.test(navigator.userAgent) && !isStandalone()) { toast('On iPhone, first tap Share, then Add to Home Screen, then open the Vibes app and turn this on there', 'error'); return; }
+      const perm = await Notification.requestPermission();
+      if (perm !== 'granted') { toast('Notifications are blocked. Allow them in your browser or phone settings.', 'error'); return; }
+      const k = await api('connect/push-key');
+      const sub = await reg.pushManager.subscribe({userVisibleOnly: true, applicationServerKey: u8(k.key)});
+      await api('connect/push-subscribe', {method: 'POST', body: sub.toJSON()}); paintPush(true); toast('Phone notifications turned on');
+    } catch (e) { toast(e.message || 'Could not change notifications', 'error'); }
+  }
+  function paintMail(n = 0) { const b = document.querySelector('#vcx-root [data-act="mailpref"]'); if (b) { b.classList.toggle('off', S._mail === false); b.title = S._mail === false ? 'Email alerts are off - tap to turn on' : 'Email alerts are on - tap to turn off'; } else if (n < 20) setTimeout(() => paintMail(n + 1), 400); }
+  function revealTrash(n = 0) { const b = document.querySelector('#vcx-root [data-act="trash"]'); if (b) b.hidden = false; else if (n < 20) setTimeout(() => revealTrash(n + 1), 400); }
   function renderList(resetScroll = true) {
+    if (S._pushInit === undefined) { S._pushInit = true; pushIsOn().then(paintPush).catch(() => paintPush(false)); }
+    if (S._mailInit === undefined) { S._mailInit = true; api('connect/email-pref').then((r) => { S._mail = r.on; paintMail(); }).catch(() => {}); }
+    if (S._trash === undefined) { S._trash = false; api('connect/deleted').then(() => { S._trash = true; revealTrash(); }).catch(() => {}); }
     const list = $('#vcx-list'); if (!list) return;
     const keep = list.scrollTop;
     $$('.vcx-filters [data-count]').forEach((el) => {
@@ -1433,11 +1481,14 @@ async function renderCRM() {
     const inGroup = new Set((c.members || []).map((m) => Number(m.id)));
     const addable = S.members.filter((m) => !inGroup.has(Number(m.id)));
     sheet(`<div class="vcx-info-head">${convAv(c, 'lg')}<h3>${esc(convTitle(c))}</h3><p class="vcx-muted">${direct ? esc(other(c)?.email || 'Direct message') : `${(c.members || []).length} members`}</p></div>
+      ${manage && c.type !== 'general' ? `<div class="vcx-photo-actions"><label class="vcx-btn small">Change photo<input type="file" id="vcx-gphoto" accept="image/jpeg,image/png,image/webp,image/gif" hidden></label>${c.image_url ? '<button type="button" class="vcx-btn small" id="vcx-gphoto-rm">Remove photo</button>' : ''}</div>` : ''}
       ${manage ? `<form id="vcx-rename" class="vcx-rename"><input name="title" value="${esc(c.title)}" maxlength="80" aria-label="Group name"><button class="vcx-btn small primary">Rename</button></form>` : ''}
       <div class="vcx-field">Members</div><div class="vcx-people">${(c.members || []).map((m) => `<div class="vcx-person">${avatar(m.name, m.avatar_url)}<span><strong>${esc(m.name)}${Number(m.id) === S.me ? ' (you)' : ''}</strong><small>${esc(m.email || '')}</small></span>${manage && Number(m.id) !== S.me && c.type !== 'general' ? `<button type="button" class="vcx-link danger" data-rmmember="${m.id}">Remove</button>` : ''}</div>`).join('')}</div>
       ${manage && addable.length ? `<div class="vcx-field">Add people</div><div class="vcx-people">${addable.map((m) => `<button type="button" data-addmember="${m.id}">${avatar(m.name, m.avatar_url)}<span><strong>${esc(m.name)}</strong><small>${esc(m.email || '')}</small></span><i class="vcx-plus">${icons.plus}</i></button>`).join('')}</div>` : ''}
-      <div class="vcx-actions col"><button type="button" class="vcx-btn" data-act="pin-sheet">${c.pinned ? 'Unpin conversation' : 'Pin conversation'}</button>${!direct && c.type !== 'general' ? '<button type="button" class="vcx-btn danger" data-act="leave">Leave group</button>' : ''}<button type="button" class="vcx-btn" data-act="dismiss">Done</button></div>`, 'dialog scroll');
+      <div class="vcx-actions col"><button type="button" class="vcx-btn" data-act="pin-sheet">${c.pinned ? 'Unpin conversation' : 'Pin conversation'}</button>${!direct && c.type !== 'general' ? '<button type="button" class="vcx-btn danger" data-act="leave">Leave group</button>' : ''}${direct ? '<button type="button" class="vcx-btn danger" data-act="delchat">Delete chat</button>' : (manage && c.type !== 'general' ? '<button type="button" class="vcx-btn danger" data-act="delgroup">Delete group</button>' : '')}<button type="button" class="vcx-btn" data-act="dismiss">Done</button></div>`, 'dialog scroll');
     const layer = $('#vcx-layer');
+    $('#vcx-gphoto')?.addEventListener('change', async (ev) => { const f = ev.target.files[0]; if (!f) return; if (f.size > 4 * 1024 * 1024) { toast('The picture must be 4 MB or smaller', 'error'); return; } const fd = new FormData(); fd.append('file', f); try { await api(`connect/conversations/${c.id}/image`, {method: 'POST', body: fd}); toast('Group photo updated'); await afterGroupChange(c.id, true); } catch (e) { toast(e.message, 'error'); } });
+    $('#vcx-gphoto-rm')?.addEventListener('click', async () => { try { await api(`connect/conversations/${c.id}/image`, {method: 'DELETE'}); toast('Group photo removed'); await afterGroupChange(c.id, true); } catch (e) { toast(e.message, 'error'); } });
     $('#vcx-rename')?.addEventListener('submit', async (ev) => { ev.preventDefault(); try { await api(`connect/conversations/${c.id}`, {method: 'PATCH', body: {title: ev.target.title.value}}); toast('Group renamed'); await afterGroupChange(c.id, true); } catch (e) { toast(e.message, 'error'); } });
     layer.onclick = async (ev) => {
       const add = ev.target.closest('[data-addmember]'), rm = ev.target.closest('[data-rmmember]');
@@ -1500,9 +1551,13 @@ async function renderCRM() {
       if (a === 'close') { closeOverlay(); return; }
       if (a === 'new') { newChatSheet(); return; }
       if (a === 'back') { setView('list'); S.active = null; S.sig = ''; clearTimeout(S.threadTimer); renderList(false); $('#vcx-chat').hidden = true; $('#vcx-empty').hidden = false; return; }
+      if (a === 'pushpref') { togglePush(); return; }
+      if (a === 'mailpref') { api('connect/email-pref', {method: 'POST', body: {on: S._mail === false}}).then((r) => { S._mail = r.on; paintMail(); toast(r.on ? 'Email alerts turned on' : 'Email alerts turned off'); }).catch((e) => toast(e.message, 'error')); return; }
+      if (a === 'trash') { trashSheet(); return; }
       if (a === 'info') { infoSheet(); return; }
       if (a === 'pin') { togglePin(); return; }
       if (a === 'pin-sheet') { closeLayer(); togglePin(); return; }
+      if (a === 'delchat' || a === 'delgroup') { const c = S.active; const grp = a === 'delgroup'; confirmBox(grp ? 'Delete this group?' : 'Delete this chat?', grp ? 'The group and all its messages will disappear for every member. This cannot be undone from the portal.' : 'The chat is removed from your list only. The other person keeps their copy, and it returns if they message you again.', 'Delete', async () => { try { await api(`connect/conversations/${c.id}`, {method: 'DELETE'}); S.active = null; S.convs = await api('connect/conversations'); renderList(); $('#vcx-chat').hidden = true; $('#vcx-empty').hidden = false; setView('list'); toast(grp ? 'Group deleted' : 'Chat deleted'); } catch (e) { toast(e.message, 'error'); } }); return; }
       if (a === 'leave') { const c = S.active; confirmBox('Leave this group?', 'You will stop receiving messages from it. Someone will need to add you back.', 'Leave', async () => { try { await api(`connect/conversations/${c.id}/members/${S.me}`, {method: 'DELETE'}); S.active = null; S.convs = await api('connect/conversations'); renderList(); $('#vcx-chat').hidden = true; $('#vcx-empty').hidden = false; setView('list'); toast('You left the group'); } catch (e) { toast(e.message, 'error'); } }); return; }
       if (a === 'attach') { $('#vcx-file').click(); return; }
       if (a === 'emoji') { emojiPicker((e) => { const i = $('#vcx-input'); const p = i.selectionStart ?? i.value.length; i.value = i.value.slice(0, p) + e + i.value.slice(i.selectionEnd ?? p); i.focus(); const np = p + e.length; i.setSelectionRange(np, np); autosize(); }, act); return; }
@@ -1678,4 +1733,736 @@ async function renderCRM() {
     } catch (err) { msg.textContent = err.message; }
     b.disabled = false;
   });
+})();
+
+/* Files & Brand: Library (Drive-linked shared folders) + page organiser */
+(() => {
+  if (window.__vplInstalled) return; window.__vplInstalled = true;
+  const esc = (v) => String(v ?? '').replace(/[&<>'"]/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
+  const api = async (path, opts = {}) => {
+    const headers = {'X-WP-Nonce': VPM.nonce, ...(opts.headers || {})};
+    const res = await fetch(VPM.root + path, {...opts, headers, credentials: 'same-origin', cache: 'no-store'});
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.message || 'The request could not be completed.');
+    return data;
+  };
+  const size = (n) => !n ? '' : n < 1024 ? n + ' B' : n < 1048576 ? Math.round(n / 1024) + ' KB' : n < 1073741824 ? (n / 1048576).toFixed(1) + ' MB' : (n / 1073741824).toFixed(2) + ' GB';
+  const when = (s) => { const d = new Date(s); return isNaN(d) ? '' : d.toLocaleDateString(undefined, {day: 'numeric', month: 'short', year: 'numeric'}); };
+  const ICON = {
+    Templates: 'M5 4h14v16H5zM8 8h8M8 12h8M8 16h5', Music: 'M9 18V6l10-2v12M9 18a2.5 2.5 0 1 1-5 0 2.5 2.5 0 0 1 5 0zM19 16a2.5 2.5 0 1 1-5 0 2.5 2.5 0 0 1 5 0z',
+    'Sound Effects': 'M4 10v4h3l5 4V6L7 10zM16 9a4 4 0 0 1 0 6M18.5 6.5a8 8 0 0 1 0 11', Videos: 'M4 6h11v12H4zM15 10l5-3v10l-5-3',
+    Images: 'M4 5h16v14H4zM4 16l5-5 4 4 3-3 4 4M9 9.5h.01', 'Style References': 'M12 3l2.6 5.6 6 .7-4.5 4.1 1.2 6L12 16.4 6.7 19.4l1.2-6L3.4 9.3l6-.7z'
+  };
+  const icon = (name) => `<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="${ICON[name] || 'M3.5 7.5h6l2 2h9v9h-17z'}"/></svg>`;
+  const fileGlyph = (f) => f.folder ? '📁' : /^image\//.test(f.mime) ? '🖼️' : /^video\//.test(f.mime) ? '🎬' : /^audio\//.test(f.mime) ? '🎵' : /pdf/.test(f.mime) ? '📕' : '📄';
+  let st = null, openId = '', listing = null, busy = '', recent = null, query = '', hits = null, bk = null;
+
+  const toast = (m) => { let t = document.querySelector('.vpl-toast'); if (!t) { t = document.createElement('div'); t.className = 'vpl-toast'; document.body.appendChild(t); } t.textContent = m; t.classList.add('on'); clearTimeout(t._h); t._h = setTimeout(() => t.classList.remove('on'), 4200); };
+
+  const rowHtml = (f) => `<div class="vpl-file"><span class="vpl-glyph">${f.thumb && !f.folder ? `<img src="${esc(f.thumb)}" alt="" loading="lazy" referrerpolicy="no-referrer">` : fileGlyph(f)}</span><div class="vpl-fname"><b>${esc(f.name)}</b><small>${[f.inFolder, f.folder ? 'Folder' : size(f.size), when(f.modified), f.by ? 'by ' + f.by : ''].filter(Boolean).map(esc).join(' · ')}</small></div><div class="vpl-facts">${f.folder ? '' : `<button type="button" class="vtp-btn small" data-vpl-prev="${esc(f.preview)}" data-vpl-pname="${esc(f.name)}">Preview</button><a class="vtp-btn small" href="${esc(f.download)}" target="_blank" rel="noopener noreferrer">Download</a>`}<a class="vtp-btn small" href="${esc(f.view)}" target="_blank" rel="noopener noreferrer">Open ↗</a>${st.admin && !f.folder ? `<button type="button" class="vtp-btn small vpl-danger" data-vpl-del="${esc(f.id)}">Delete</button>` : ''}</div></div>`;
+  function filesPanel() {
+    if (!openId) return '';
+    const folder = (st.folders || []).find((f) => f.id === openId); if (!folder) return '';
+    const rows = listing === null ? '<p class="vpl-empty">Loading files…</p>' : !listing.length ? '<p class="vpl-empty">This folder is empty. Add the first file.</p>' : listing.map(rowHtml).join('');
+    return `<div class="vpl-panel"><div class="vpl-panel-head"><h3>${esc(folder.name)}</h3><div class="vpl-panel-actions"><label class="vtp-btn small primary vpl-up">${busy === 'up' ? 'Uploading…' : 'Add files'}<input type="file" multiple data-vpl-upload ${busy ? 'disabled' : ''}></label><a class="vtp-btn small" href="${esc(folder.url)}" target="_blank" rel="noopener noreferrer">Open in Drive ↗</a><button type="button" class="vtp-btn small" data-vpl-close>Close</button></div></div>${rows}${st.admin ? '' : '<p class="vpl-note">You can download and add files. Only the administrator can delete.</p>'}</div>`;
+  }
+
+  function sectionHtml() {
+    const admin = st.admin;
+    let body;
+    if (!st.ready) {
+      body = admin ? `<article class="vtp-card vpl-setup"><h3>Set up the Library</h3><p>${st.drive ? 'This creates a “Library” folder in your portal Drive with Templates, Music, Sound Effects, Videos, Images and Style References, shared as view-by-link.' : 'Google Drive is not connected yet. Connect it in Drive settings first.'}</p><button type="button" class="vtp-btn small primary" data-vpl-setup ${st.drive ? '' : 'disabled'}>${busy === 'setup' ? 'Creating…' : 'Create Library'}</button></article>` : '<article class="vtp-card vpl-setup"><p>The Library is being prepared by the administrator.</p></article>';
+    } else {
+      const cards = (st.folders || []).map((f) => `<article class="vtp-card vpl-folder${f.id === openId ? ' on' : ''}"><div class="vpl-ico">${icon(f.name)}</div><h3>${esc(f.name)}</h3><div class="vpl-actions"><button type="button" class="vtp-btn small primary" data-vpl-open="${esc(f.id)}">Browse</button><a class="vtp-btn small" href="${esc(f.url)}" target="_blank" rel="noopener noreferrer">Drive ↗</a>${admin ? `<button type="button" class="vpl-x" data-vpl-rm="${esc(f.id)}" title="Remove folder" aria-label="Remove ${esc(f.name)}">✕</button>` : ''}</div></article>`).join('');
+      const add = admin ? `<form class="vpl-add" data-vpl-add><input name="name" maxlength="60" placeholder="New folder name" aria-label="New folder name" required><button class="vtp-btn small primary">Create folder</button></form>` : '';
+      const searchBox = `<div class="vpl-search"><input type="search" data-vpl-search value="${esc(query)}" placeholder="Search all Library files…" aria-label="Search Library files"></div>`;
+      const results = hits === null ? '' : `<div class="vpl-panel"><div class="vpl-panel-head"><h3>Search results</h3></div>${hits.length ? hits.map(rowHtml).join('') : '<p class="vpl-empty">No files match.</p>'}</div>`;
+      const rec = (!openId && hits === null && recent && recent.length) ? `<div class="vpl-panel"><div class="vpl-panel-head"><h3>Recently added</h3></div>${recent.map((r) => `<div class="vpl-file"><span class="vpl-glyph">📄</span><div class="vpl-fname"><b>${esc(r.name)}</b><small>${esc([r.folder, r.by ? 'by ' + r.by : '', when(r.at)].filter(Boolean).join(' · '))}</small></div><div class="vpl-facts"><a class="vtp-btn small" href="${esc(r.view)}" target="_blank" rel="noopener noreferrer">Open ↗</a></div></div>`).join('')}</div>` : '';
+      body = `${searchBox}<div class="vpl-grid">${cards}</div>${add}${results}${hits === null ? filesPanel() : ''}${rec}`;
+    }
+    return `<div class="vtp-section-heading"><div><span class="vtp-eyebrow">SHARED WITH THE TEAM</span><h2>Library</h2><p>Templates, music, sound effects, videos, images and style references, stored in Google Drive. Everyone can open, download and add files; only the administrator can delete.</p></div><span class="vtp-chip ${admin ? 'green' : 'blue'}">${admin ? 'Admin managed' : 'View · Download · Add'}</span></div>${body}`;
+  }
+
+  function organise(page) {
+    const secs = [...page.querySelectorAll(':scope > .vtp-files-section')];
+    const names = ['Vibes files', 'Library', 'Clients', 'Quotation templates'];
+    const map = [];
+    secs.forEach((s) => {
+      const h = (s.querySelector('h2')?.textContent || '').trim().toLowerCase();
+      const key = s.hasAttribute('data-vpl-section') ? 'Library' : /vibes agency files/.test(h) ? 'Vibes files' : /client/.test(h) ? 'Clients' : /quotation|template|sample/.test(h) ? 'Quotation templates' : '';
+      if (key) { s.id = 'vpl-sec-' + key.toLowerCase().replace(/\W+/g, '-'); map.push([key, s]); }
+    });
+    map.sort((a, b) => names.indexOf(a[0]) - names.indexOf(b[0]));
+    const anchor = page.querySelector('.vtp-page-head, header, .vtp-pagehead') || null;
+    map.forEach(([, s]) => page.appendChild(s));
+    let nav = page.querySelector('.vpl-nav'); if (nav) nav.remove();
+    nav = document.createElement('nav'); nav.className = 'vpl-nav'; nav.setAttribute('aria-label', 'Files sections');
+    nav.innerHTML = map.map(([k, s]) => `<a href="#" data-vpl-jump="${esc(s.id)}">${esc(k)}</a>`).join('');
+    const first = page.querySelector(':scope > .vtp-files-section'); if (first) page.insertBefore(nav, first);
+    const pad = parseFloat(getComputedStyle(page.closest('.vtp-view') || document.body).paddingTop) || 0;
+  }
+
+  function mount(page) {
+    let sec = page.querySelector('[data-vpl-section]');
+    if (!sec) { sec = document.createElement('section'); sec.className = 'vtp-files-section vpl-section'; sec.setAttribute('data-vpl-section', ''); }
+    sec.innerHTML = sectionHtml();
+    if (!sec.parentNode) page.appendChild(sec);
+    organise(page);
+  }
+  const redrawKeep = () => { const i = document.querySelector('[data-vpl-search]'); const had = i && document.activeElement === i; const pos = i ? i.selectionStart : 0; redraw(); if (had) { const n = document.querySelector('[data-vpl-search]'); n && (n.focus(), n.setSelectionRange(pos, pos)); } };
+  const redraw = () => { const p = document.querySelector('.vtp-files-page'); if (p && st) mount(p); };
+  async function loadFolder(id) { openId = id; listing = null; redraw(); try { listing = (await api(`library/folders/${id}/files`)).files; } catch (e) { listing = []; toast(e.message); } redraw(); }
+  async function refreshList() { if (!openId) return; try { listing = (await api(`library/folders/${openId}/files`)).files; api('library/recent').then((d) => { recent = d.items; }).catch(() => {}); } catch (e) { toast(e.message); } redraw(); }
+
+  let loading = false;
+  async function tick() {
+    const page = document.querySelector('.vtp-files-page'); if (!page) return;
+    if (page.querySelector('[data-vpl-section]') && page.querySelector('.vpl-nav')) {
+      // Late-arriving sections (quotation templates) need re-sorting once.
+      const n = page.querySelectorAll(':scope > .vtp-files-section').length;
+      if (page._vplN !== n) { page._vplN = n; organise(page); }
+      return;
+    }
+    if (loading) return; loading = true;
+    try { if (!st) { st = await api('library'); if (st.ready) api('library/recent').then((d) => { recent = d.items; redraw(); }).catch(() => {}); } mount(page); page._vplN = page.querySelectorAll(':scope > .vtp-files-section').length; } catch (e) { /* page stays as is */ } finally { loading = false; }
+  }
+  setInterval(tick, 500);
+
+  document.addEventListener('click', async (e) => {
+    const pv = e.target.closest('[data-vpl-prev]'); if (pv) { const m = document.createElement('div'); m.className = 'vpl-modal'; m.innerHTML = `<div class="vpl-modal-box"><div class="vpl-modal-bar"><b>${esc(pv.dataset.vplPname)}</b><button type="button" class="vtp-btn small" data-vpl-mclose>Close</button></div><iframe src="${esc(pv.dataset.vplPrev)}" allow="autoplay" referrerpolicy="no-referrer"></iframe></div>`; document.body.appendChild(m); return; }
+    if (e.target.closest('[data-vpl-mclose]') || e.target.classList.contains('vpl-modal')) { document.querySelector('.vpl-modal')?.remove(); return; }
+    const t = e.target.closest('[data-vpl-jump],[data-vpl-open],[data-vpl-close],[data-vpl-setup],[data-vpl-rm],[data-vpl-del]'); if (!t) return;
+    try {
+      if (t.hasAttribute('data-vpl-jump')) { e.preventDefault(); document.getElementById(t.dataset.vplJump)?.scrollIntoView({behavior: 'smooth', block: 'start'}); return; }
+      if (t.hasAttribute('data-vpl-open')) { await loadFolder(t.dataset.vplOpen); document.querySelector('.vpl-panel')?.scrollIntoView({behavior: 'smooth', block: 'nearest'}); return; }
+      if (t.hasAttribute('data-vpl-close')) { openId = ''; listing = null; redraw(); return; }
+      if (t.hasAttribute('data-vpl-setup')) { busy = 'setup'; redraw(); st = await api('library/setup', {method: 'POST'}); busy = ''; redraw(); toast('Library created in Google Drive.'); return; }
+      if (t.hasAttribute('data-vpl-rm')) {
+        if (!t.classList.contains('confirm')) { t.classList.add('confirm'); t.textContent = 'Remove?'; t.title = 'Click again to confirm. The folder moves to Drive trash.'; setTimeout(() => { if (t.isConnected) { t.classList.remove('confirm'); t.textContent = '✕'; } }, 4000); return; }
+        st = await api('library/folders/' + t.dataset.vplRm, {method: 'DELETE'}); if (openId === t.dataset.vplRm) { openId = ''; listing = null; } redraw(); toast('Folder removed (moved to Drive trash).'); return;
+      }
+      if (t.hasAttribute('data-vpl-del')) {
+        if (!t.classList.contains('confirm')) { t.classList.add('confirm'); t.textContent = 'Confirm delete'; setTimeout(() => { if (t.isConnected) { t.classList.remove('confirm'); t.textContent = 'Delete'; } }, 4000); return; }
+        await api('library/files/' + t.dataset.vplDel, {method: 'DELETE'}); await refreshList(); toast('File moved to Drive trash.'); return;
+      }
+    } catch (err) { busy = ''; redraw(); toast(err.message); }
+  });
+  let sh = 0;
+  document.addEventListener('input', (e) => {
+    const i = e.target.closest('[data-vpl-search]'); if (!i) return; query = i.value; clearTimeout(sh);
+    if (query.trim().length < 2) { hits = null; redrawKeep(); return; }
+    sh = setTimeout(async () => { try { const d = await api('library/search?q=' + encodeURIComponent(query.trim())); if (query.trim() === i.value.trim()) { hits = d.files; redrawKeep(); } } catch (err) { toast(err.message); } }, 350);
+  });
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') document.querySelector('.vpl-modal')?.remove(); });
+  document.addEventListener('submit', async (e) => {
+    const f = e.target.closest('[data-vpl-add]'); if (!f) return; e.preventDefault();
+    const name = f.elements.name.value.trim(); if (!name) return;
+    f.querySelector('button').disabled = true;
+    try { st = await api('library/folders', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({name})}); redraw(); toast('Folder created.'); } catch (err) { toast(err.message); f.querySelector('button').disabled = false; }
+  });
+  document.addEventListener('change', async (e) => {
+    const inp = e.target.closest('[data-vpl-upload]'); if (!inp || !inp.files.length || !openId) return;
+    const files = [...inp.files], id = openId; inp.value = ''; busy = 'up'; redraw(); let ok = 0;
+    for (const file of files) {
+      try { const fd = new FormData(); fd.append('file', file); await api(`library/folders/${id}/upload`, {method: 'POST', body: fd}); ok++; } catch (err) { toast(`${file.name}: ${err.message}`); }
+    }
+    busy = ''; await refreshList(); if (ok) toast(`${ok} file${ok > 1 ? 's' : ''} added.`);
+  });
+})();
+
+/* Global search, test notification, code backup control */
+(() => {
+  if (window.__vpxInstalled) return; window.__vpxInstalled = true;
+  const esc = (v) => String(v ?? '').replace(/[&<>'"]/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
+  const api = async (path, opts = {}) => {
+    const res = await fetch(VPM.root + path, {...opts, headers: {'X-WP-Nonce': VPM.nonce, ...(opts.headers || {})}, credentials: 'same-origin', cache: 'no-store'});
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.message || 'The request could not be completed.');
+    return data;
+  };
+  const toast = (m) => { let t = document.querySelector('.vpl-toast'); if (!t) { t = document.createElement('div'); t.className = 'vpl-toast'; document.body.appendChild(t); } t.textContent = m; t.classList.add('on'); clearTimeout(t._h); t._h = setTimeout(() => t.classList.remove('on'), 5000); };
+
+  /* ---- global search ---- */
+  let timer = 0, panel = null, seq = 0;
+  const close = () => { panel?.remove(); panel = null; };
+  const show = (groups, q) => {
+    const wrap = document.querySelector('.vtp-search'); if (!wrap) return;
+    if (!panel) { panel = document.createElement('div'); panel.className = 'vpx-panel'; wrap.style.position = 'relative'; wrap.appendChild(panel); }
+    panel.innerHTML = groups.length ? groups.map((g) => `<div class="vpx-group"><h4>${esc(g.label)}</h4>${g.items.map((it) => it.url ? `<a class="vpx-item" href="${esc(it.url)}" target="_blank" rel="noopener noreferrer"><b>${esc(it.title)}</b><small>${esc(it.sub || '')}</small></a>` : `<a class="vpx-item" href="${esc(it.go)}" data-vpx-go="${esc(it.go)}"><b>${esc(it.title)}</b><small>${esc(it.sub || '')}</small></a>`).join('')}</div>`).join('') : `<p class="vpx-empty">No results for “${esc(q)}”.</p>`;
+  };
+  document.addEventListener('input', (e) => {
+    const i = e.target.closest('#vtp-global-search'); if (!i) return; clearTimeout(timer);
+    const q = i.value.trim(); if (q.length < 2) { close(); return; }
+    timer = setTimeout(async () => { const my = ++seq; try { const d = await api('search?q=' + encodeURIComponent(q)); if (my === seq) show(d.groups, q); } catch (err) { /* ignore */ } }, 260);
+  });
+  document.addEventListener('click', (e) => {
+    const go = e.target.closest('[data-vpx-go]');
+    if (go) { e.preventDefault(); const h = go.dataset.vpxGo; close(); const i = document.getElementById('vtp-global-search'); if (i) i.value = ''; if (location.hash === h) window.dispatchEvent(new HashChangeEvent('hashchange')); else location.hash = h; return; }
+    if (panel && !e.target.closest('.vtp-search')) close();
+  });
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') close(); if (e.key === '/' && !/INPUT|TEXTAREA|SELECT/.test((document.activeElement || {}).tagName || '')) { const i = document.getElementById('vtp-global-search'); if (i) { e.preventDefault(); i.focus(); } } });
+
+  /* ---- test notification (user menu) ---- */
+  const addTest = () => {
+    const dd = document.getElementById('vtp-user-dropdown'); if (!dd || dd.querySelector('[data-vpx-test]')) return;
+    const b = document.createElement('a'); b.href = '#'; b.setAttribute('data-vpx-test', ''); b.textContent = 'Send test notification';
+    dd.insertBefore(b, dd.lastElementChild);
+  };
+  new MutationObserver(addTest).observe(document.body, {childList: true, subtree: true}); addTest();
+  document.addEventListener('click', async (e) => {
+    const b = e.target.closest('[data-vpx-test]'); if (!b) return; e.preventDefault();
+    b.textContent = 'Sending…';
+    try { const d = await api('connect/push-test', {method: 'POST'}); toast(d.message); } catch (err) { toast(err.message); }
+    b.textContent = 'Send test notification';
+  });
+
+  /* ---- backup control (admin, Files page) ---- */
+  const ago = (s) => { const d = new Date(s); return isNaN(d) ? '' : d.toLocaleString(undefined, {day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit'}); };
+  let bk = null, bkBusy = false, bkLoaded = false;
+  const bkHtml = () => {
+    const s = bk || {}; const line = s.ok === false && s.error ? `<span class="vpx-bad">Last attempt failed: ${esc(s.error)}</span>` : s.at ? `Last backup ${esc(ago(s.at))} · ${Math.round((s.size || 0) / 1024)} KB · ${s.files || 0} files${s.url ? ` · <a href="${esc(s.url)}" target="_blank" rel="noopener noreferrer">Open in Drive ↗</a>` : ''}` : 'No backup yet.';
+    return `<div class="vtp-section-heading"><div><span class="vtp-eyebrow">SAFETY NET</span><h2>Code backup</h2><p>A copy of the portal’s code is saved to Google Drive (“Vibes Backups”) every week; the newest 8 are kept. Client and task data are in the website database, which your hosting backs up separately.</p></div><span class="vtp-chip amber">Admin only</span></div><article class="vtp-card vpx-bk"><div class="vpx-bk-line">${line}</div><button type="button" class="vtp-btn small primary" data-vpx-bk ${bkBusy ? 'disabled' : ''}>${bkBusy ? 'Backing up…' : 'Back up now'}</button></article>`;
+  };
+  const mountBk = async () => {
+    const page = document.querySelector('.vtp-files-page'); if (!page) return;
+    const adm = document.querySelector('[data-vpl-setup],[data-vpl-rm]') || document.querySelector('.vpl-add'); if (!adm) return;
+    let sec = page.querySelector('[data-vpx-backup]');
+    if (!sec) { if (!bkLoaded) { bkLoaded = true; try { bk = await api('backup'); } catch (e) { return; } } sec = document.createElement('section'); sec.className = 'vtp-files-section'; sec.setAttribute('data-vpx-backup', ''); sec.innerHTML = bkHtml(); page.appendChild(sec); }
+    else if (sec !== page.lastElementChild) page.appendChild(sec);
+  };
+  setInterval(mountBk, 700);
+  document.addEventListener('click', async (e) => {
+    const b = e.target.closest('[data-vpx-bk]'); if (!b) return; bkBusy = true; const sec = b.closest('[data-vpx-backup]'); sec.innerHTML = bkHtml();
+    try { bk = await api('backup/run', {method: 'POST'}); toast('Backup saved to Google Drive.'); } catch (err) { toast(err.message); try { bk = await api('backup'); } catch (x) {} }
+    bkBusy = false; sec.innerHTML = bkHtml();
+  });
+})();
+
+/* Announcements: emoji reactions + comments */
+(() => {
+  if (window.__vsoInstalled) return; window.__vsoInstalled = true;
+  const esc = (v) => String(v ?? '').replace(/[&<>'"]/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
+  const api = async (path, opts = {}) => {
+    const res = await fetch(VPM.root + path, {...opts, headers: {'X-WP-Nonce': VPM.nonce, ...(opts.headers || {})}, credentials: 'same-origin', cache: 'no-store'});
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.message || 'The request could not be completed.');
+    return data;
+  };
+  const toast = (m) => { let t = document.querySelector('.vpl-toast'); if (!t) { t = document.createElement('div'); t.className = 'vpl-toast'; document.body.appendChild(t); } t.textContent = m; t.classList.add('on'); clearTimeout(t._h); t._h = setTimeout(() => t.classList.remove('on'), 4000); };
+  let social = null, list = null, emoji = ['👍','❤️','🎉','🔥','👏','😂'], open = new Set(), pick = null, loading = false;
+  const ago = (s) => { const d = new Date(s); if (isNaN(d)) return ''; const m = Math.round((Date.now() - d) / 60000); return m < 1 ? 'just now' : m < 60 ? m + ' min ago' : m < 1440 ? Math.round(m / 60) + ' h ago' : d.toLocaleDateString(undefined, {day: 'numeric', month: 'short'}); };
+
+  const block = (id) => {
+    const s = social[id] || {reactions: [], comments: []};
+    const chips = s.reactions.map((r) => `<button type="button" class="vso-chip${r.mine ? ' on' : ''}" data-vso-react="${id}" data-emoji="${esc(r.emoji)}" title="${esc(r.names.join(', '))}">${esc(r.emoji)} <b>${r.count}</b></button>`).join('');
+    const picker = pick === id ? `<div class="vso-pick">${emoji.map((e) => `<button type="button" data-vso-react="${id}" data-emoji="${esc(e)}">${esc(e)}</button>`).join('')}</div>` : '';
+    const isOpen = open.has(id);
+    const comments = isOpen ? `<div class="vso-comments">${s.comments.map((c) => `<div class="vso-comment"><div class="vso-av">${esc((c.name || '?').trim().charAt(0).toUpperCase())}</div><div class="vso-body"><div class="vso-head"><b>${esc(c.name)}</b><small>${esc(ago(c.at))}</small>${(c.mine || window.__vsoAdmin) ? `<button type="button" class="vso-del" data-vso-del="${id}:${c.id}" title="Delete">✕</button>` : ''}</div><p>${esc(c.body)}</p></div></div>`).join('') || '<p class="vso-none">No comments yet. Be the first.</p>'}<form class="vso-form" data-vso-form="${id}"><div class="vso-emo">${emoji.slice(0, 6).map((e) => `<button type="button" data-vso-ins="${esc(e)}">${esc(e)}</button>`).join('')}</div><div class="vso-row"><input name="body" maxlength="1000" placeholder="Write a comment…" autocomplete="off" required><button class="vtp-btn small primary">Send</button></div></form></div>` : '';
+    const photo = s.photo ? `<a class="vso-photo" href="${esc(s.photo)}" target="_blank" rel="noopener noreferrer"><img src="${esc(s.photo)}" alt="Announcement photo" loading="lazy"></a>` : '';
+    return `<div class="vso" data-vso-id="${id}">${photo}<div class="vso-bar">${chips}<button type="button" class="vso-add" data-vso-pick="${id}" title="Add reaction" aria-label="Add reaction">☺ +</button><button type="button" class="vso-cbtn${isOpen ? ' on' : ''}" data-vso-toggle="${id}">💬 ${s.comments.length ? s.comments.length + (s.comments.length > 1 ? ' comments' : ' comment') : 'Comment'}</button></div>${picker}${comments}</div>`;
+  };
+
+  const key = (t, a) => (t || '').trim() + '|' + (a || '').trim();
+  function enhance() {
+    const host = document.querySelector('#vtp-announcement-list'); if (!host || !social || !list) return;
+    window.__vsoAdmin = !!host.querySelector('[data-edit-announcement]');
+    const queues = {};
+    list.forEach((it) => { (queues[key(it.title, it.author_name || 'Vibes Agency')] ||= []).push(Number(it.id)); });
+    host.querySelectorAll('.vtp-announcement-card').forEach((card) => {
+      const old = card.querySelector('.vso'); 
+      const k = key(card.querySelector('h2')?.textContent, (card.querySelector('.vtp-meta span')?.textContent || '').replace(/^By\s+/, ''));
+      const id = (queues[k] || []).shift(); if (!id) return;
+      if (old && Number(old.dataset.vsoId) === id) return;
+      old?.remove();
+      const holder = document.createElement('div'); holder.innerHTML = block(id); card.appendChild(holder.firstElementChild);
+    });
+  }
+  const refreshOne = (id) => { document.querySelectorAll(`.vso[data-vso-id="${id}"]`).forEach((el) => { const h = document.createElement('div'); h.innerHTML = block(id); el.replaceWith(h.firstElementChild); }); };
+
+  async function tick() {
+    const host = document.querySelector('#vtp-announcement-list'); if (!host) return;
+    if (!social && !loading) { loading = true; try { const [s, l] = await Promise.all([api('announcements/social'), api('announcements')]); social = s.items; emoji = s.emoji || emoji; list = l; } catch (e) { loading = false; return; } loading = false; }
+    if (social) enhance();
+  }
+  new MutationObserver(() => { if (document.querySelector('#vtp-announcement-list')) tick(); }).observe(document.body, {childList: true, subtree: true});
+  setInterval(tick, 1500);
+  // Reset caches when leaving the page so a fresh visit reloads counts.
+  window.addEventListener('hashchange', () => { if (!/announcements/.test(location.hash)) { social = null; list = null; pick = null; } });
+
+  /* ---- optional photo on the announcement form ---- */
+  const shrink = (file) => new Promise((resolve) => {
+    if (!/^image\/(jpeg|png|webp)$/.test(file.type)) return resolve(file);
+    const img = new Image(), url = URL.createObjectURL(file);
+    img.onload = () => { URL.revokeObjectURL(url); const k = Math.min(1, 1600 / Math.max(img.width, img.height)); if (k === 1 && file.size < 1.5e6) return resolve(file);
+      const c = document.createElement('canvas'); c.width = Math.round(img.width * k); c.height = Math.round(img.height * k); c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+      c.toBlob((b) => resolve(b ? new File([b], file.name.replace(/\.\w+$/, '') + '.jpg', {type: 'image/jpeg'}) : file), 'image/jpeg', 0.86); };
+    img.onerror = () => resolve(file); img.src = url;
+  });
+  const addField = () => {
+    const form = document.getElementById('vtp-announcement-form'); if (!form || form.querySelector('.vso-field')) return;
+    const id = Number(form.dataset.announcementId || 0), cur = id && social && social[id] ? social[id].photo : '';
+    const f = document.createElement('div'); f.className = 'vtp-field vso-field';
+    f.innerHTML = `<label>Photo <span class="vtp-muted">(optional, not recommended)</span></label><input type="file" accept="image/jpeg,image/png,image/webp,image/gif" data-vso-photo><small>A clear title and message work best. Add a photo only when it really helps. JPG, PNG, WebP or GIF.</small>${cur ? `<div class="vso-cur"><img src="${esc(cur)}" alt=""><label><input type="checkbox" data-vso-photo-remove> Remove current photo</label></div>` : ''}<div class="vso-prev" hidden></div>`;
+    const btn = form.querySelector('button.primary, button[type=submit], button:last-of-type'); form.insertBefore(f, btn);
+  };
+  new MutationObserver(addField).observe(document.body, {childList: true, subtree: true});
+  document.addEventListener('change', (e) => {
+    const i = e.target.closest('[data-vso-photo]'); if (!i) return; const prev = i.closest('.vso-field').querySelector('.vso-prev'); const f = i.files[0];
+    if (!f) { prev.hidden = true; prev.innerHTML = ''; return; }
+    if (f.size > 20 * 1048576) { toast('That photo is too large (max 20 MB).'); i.value = ''; return; }
+    prev.hidden = false; prev.innerHTML = `<img src="${URL.createObjectURL(f)}" alt="Preview">`;
+  });
+  const realFetch = window.fetch.bind(window);
+  window.fetch = function (input, init) {
+    const url = typeof input === 'string' ? input : (input && input.url) || ''; const m = ((init && init.method) || (input && input.method) || 'GET').toUpperCase();
+    const hit = /\/vibes\/v1\/announcements(\/\d+)?(\?|$)/.test(url) && (m === 'POST' || m === 'PATCH');
+    let file = null, rm = false;
+    if (hit) { const inp = document.querySelector('[data-vso-photo]'); file = (inp && inp.files[0]) || null; rm = !!document.querySelector('[data-vso-photo-remove]:checked'); }
+    const p = realFetch(input, init);
+    if (hit && (file || rm)) p.then(async (r) => {
+      if (!r.ok) return;
+      let id = (url.match(/announcements\/(\d+)/) || [])[1];
+      if (!id) { const j = await r.clone().json().catch(() => ({})); id = j.id || (j.data && j.data.id); }
+      if (!id) return;
+      try {
+        if (file) { const small = await shrink(file); const fd = new FormData(); fd.append('photo', small, small.name || 'photo.jpg'); await api(`announcements/${id}/photo`, {method: 'POST', body: fd}); }
+        else await api(`announcements/${id}/photo`, {method: 'DELETE'});
+        social = null; list = null; document.querySelectorAll('.vso').forEach((el) => el.remove()); toast(file ? 'Photo added.' : 'Photo removed.');
+      } catch (err) { toast('The announcement was saved, but the photo failed: ' + err.message); }
+    });
+    return p;
+  };
+
+  document.addEventListener('click', async (e) => {
+    const t = e.target.closest('[data-vso-react],[data-vso-pick],[data-vso-toggle],[data-vso-del],[data-vso-ins]'); if (!t) { if (pick !== null && !e.target.closest('.vso-pick')) { const p = pick; pick = null; refreshOne(p); } return; }
+    try {
+      if (t.dataset.vsoPick) { const id = Number(t.dataset.vsoPick); const was = pick; pick = was === id ? null : id; if (was) refreshOne(was); refreshOne(id); return; }
+      if (t.dataset.vsoToggle) { const id = Number(t.dataset.vsoToggle); open.has(id) ? open.delete(id) : open.add(id); refreshOne(id); if (open.has(id)) document.querySelector(`.vso[data-vso-id="${id}"] input`)?.focus(); return; }
+      if (t.dataset.vsoIns) { const inp = t.closest('.vso-form').querySelector('input'); const p = inp.selectionStart ?? inp.value.length; inp.value = inp.value.slice(0, p) + t.dataset.vsoIns + inp.value.slice(p); inp.focus(); inp.setSelectionRange(p + t.dataset.vsoIns.length, p + t.dataset.vsoIns.length); return; }
+      if (t.dataset.vsoReact) { const id = Number(t.dataset.vsoReact); pick = null; social[id] = await api(`announcements/${id}/react`, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({emoji: t.dataset.emoji})}); refreshOne(id); return; }
+      if (t.dataset.vsoDel) { const [id, cid] = t.dataset.vsoDel.split(':').map(Number); social[id] = await api(`announcements/${id}/comments/${cid}`, {method: 'DELETE'}); refreshOne(id); return; }
+    } catch (err) { toast(err.message); }
+  });
+  document.addEventListener('submit', async (e) => {
+    const f = e.target.closest('[data-vso-form]'); if (!f) return; e.preventDefault();
+    const id = Number(f.dataset.vsoForm), body = f.elements.body.value.trim(); if (!body) return; f.querySelector('button.primary').disabled = true;
+    try { social[id] = await api(`announcements/${id}/comments`, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({body})}); open.add(id); refreshOne(id); document.querySelector(`.vso[data-vso-id="${id}"] input`)?.focus(); } catch (err) { toast(err.message); f.querySelector('button.primary').disabled = false; }
+  });
+})();
+
+/* Dashboard v2: project cards + schedule panel */
+(function () {
+  'use strict';
+  const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c]));
+  const low = (s) => String(s || '').toLowerCase();
+  const DONE = ['done', 'completed', 'approved'];
+  const COLORS = ['#63439a', '#306898', '#f27a60', '#9576b4', '#d494c0'];
+  const iso = (d) => d.toLocaleDateString('en-CA');
+  const get = (key) => fetch(VTP.root + key + (key.includes('?') ? '&' : '?') + 'vpd=' + Date.now(), {credentials: 'same-origin', cache: 'no-store', headers: {'X-WP-Nonce': VTP.nonce}}).then((r) => (r.ok ? r.json() : [])).then((d) => (Array.isArray(d) ? d : [])).catch(() => []);
+  const initials = (n) => String(n || '?').split(/\s+/).map((p) => p[0]).join('').slice(0, 2).toUpperCase();
+  const dayLabel = (d, today) => {
+    const diff = Math.round((Date.parse(d) - Date.parse(today)) / 86400000);
+    if (diff < 0) return 'Overdue';
+    if (diff === 0) return 'Today';
+    if (diff === 1) return 'Tomorrow';
+    return new Date(d + 'T12:00:00').toLocaleDateString('en-GB', {weekday: 'short', day: 'numeric', month: 'short'});
+  };
+
+  async function enhance(section) {
+    if (section.dataset.vpd) return;
+    section.dataset.vpd = '1';
+    const [projects, tasks, invoices] = await Promise.all([get('projects'), get('tasks'), get('invoices')]);
+    if (!section.isConnected) return;
+    const today = iso(new Date());
+    const horizon = iso(new Date(Date.now() + 14 * 86400000));
+
+    // Project cards in place of the table.
+    const wide = section.querySelector('.vtp-d-wide');
+    const table = wide && wide.querySelector('.vtp-d-table');
+    if (wide && table && wide.querySelector('h2') && /Projects/i.test(wide.querySelector('h2').textContent)) {
+      const live = projects.filter((p) => low(p.status) !== 'finished').slice(0, 6);
+      if (live.length) {
+        const cards = live.map((p, i) => {
+          const total = Number(p.task_count || 0), done = Number(p.submitted_count || 0);
+          const pct = Math.max(0, Math.min(100, Number(p.progress || (total ? Math.round(done / total * 100) : 0))));
+          const people = [...new Set(tasks.filter((t) => Number(t.project_id) === Number(p.id) && t.assignee_name).map((t) => t.assignee_name))].slice(0, 3);
+          const c = COLORS[i % 3];
+          return '<a class="vpd-pc" href="#projects" style="--c:' + c + '"><div class="vpd-pc-top"><div class="vpd-av">' + people.map((n) => '<i>' + esc(initials(n)) + '</i>').join('') + '</div><span class="vpd-st">' + (pct >= 100 ? 'Client review' : 'In delivery') + '</span></div>'
+            + '<div><h4>' + esc(p.name) + '</h4><small>' + esc(p.client || '') + (p.due_date ? (p.client ? ' · ' : '') + 'due ' + esc(new Date(p.due_date + 'T12:00:00').toLocaleDateString('en-GB', {day: 'numeric', month: 'short'})) : '') + '</small>'
+            + '<div class="vpd-pm"><span>' + (total ? done + '/' + total + ' tasks' : 'Progress') + '</span><span>' + pct + '%</span></div><div class="vpd-bar"><i style="width:' + pct + '%"></i></div></div></a>';
+        }).join('');
+        table.outerHTML = '<div class="vpd-projects">' + cards + '</div>';
+        wide.classList.add('vpd-flat');
+      }
+    }
+
+    // Schedule panel.
+    const items = [];
+    tasks.filter((t) => t.due_date && !DONE.includes(low(t.status)) && t.due_date <= horizon).forEach((t) => items.push({d: t.due_date, c: '#63439a', t: t.title || 'Task', s: 'Task' + (t.assignee_name ? ' · ' + t.assignee_name : ''), h: '#tasks'}));
+    invoices.filter((i) => ['sent', 'overdue'].includes(low(i.status)) && i.due_date && i.due_date <= horizon).forEach((i) => items.push({d: i.due_date, c: '#f27a60', t: (i.invoice_number || 'Invoice') + (i.client_name ? ' · ' + i.client_name : ''), s: 'Invoice due', h: '#invoices'}));
+    projects.filter((p) => low(p.status) !== 'finished' && p.due_date && p.due_date <= horizon).forEach((p) => items.push({d: p.due_date, c: '#306898', t: p.name, s: 'Project deadline', h: '#projects'}));
+    items.sort((a, b) => (a.d < b.d ? -1 : a.d > b.d ? 1 : 0));
+    const shown = items.slice(0, 10);
+    let html = '', last = '';
+    shown.forEach((it) => {
+      const lab = dayLabel(it.d, today);
+      if (lab !== last) { html += '<div class="vpd-day' + (lab === 'Overdue' ? ' late' : '') + '">' + esc(lab) + '</div>'; last = lab; }
+      html += '<a class="vpd-ev" href="' + it.h + '" style="--c:' + it.c + '"><i></i><div><b>' + esc(it.t) + '</b><small>' + esc(it.s) + '</small></div></a>';
+    });
+    if (!html) html = '<div class="vpd-none"><strong>Nothing scheduled</strong><span>Deadlines and due dates for the next 2 weeks will appear here.</span></div>';
+    const aside = document.createElement('aside');
+    aside.className = 'vtp-card vpd-sched';
+    aside.innerHTML = '<h2>Schedule</h2><p class="vpd-sub">Next 14 days</p>' + html;
+    section.appendChild(aside);
+  }
+
+  function scan() { document.querySelectorAll('section.vtp-d:not([data-vpd])').forEach(enhance); }
+  VTPR.watch(scan);
+  scan();
+})();
+
+/* Empty states: helper line + call-to-action */
+(function () {
+  'use strict';
+  const COPY = {
+    'no inquiries yet.': 'Requests from your website, email, phone and WhatsApp will appear here.',
+    'no quotations yet.': 'Quotes you prepare from an inquiry will be listed here.',
+    'no announcements yet.': 'Share company updates with the whole team.',
+    'no leave requests yet.': 'Leave requests will appear here once they are submitted.',
+    'no pending projects.': 'Approved quotations become projects here.'
+  };
+  function decorate(box) {
+    if (box.dataset.vpe) return;
+    box.dataset.vpe = '1';
+    const title = box.querySelector('strong');
+    const key = title ? title.textContent.trim().toLowerCase() : '';
+    const sub = COPY[key];
+    if (sub && !box.querySelector('span,p')) { const p = document.createElement('p'); p.className = 'vpe-sub'; p.textContent = sub; title.after(p); }
+    if (box.closest('.vtp-column,.vtp-d-panel,.vtp-modal,.vtp-drawer') || box.querySelector('a,button')) return;
+    const page = box.closest('section.vtp-page'); if (!page) return;
+    const main = [...page.querySelectorAll('.vtp-btn.primary')].find((b) => !b.closest('.vtp-empty,.vtp-card'));
+    if (!main) return;
+    const label = main.textContent.replace(/^[\s＋+]+/, '').trim();
+    if (!label || label.length > 32) return;
+    const cta = document.createElement('button');
+    cta.type = 'button'; cta.className = 'vtp-btn primary vpe-cta'; cta.textContent = '＋ ' + label;
+    cta.addEventListener('click', () => main.click());
+    box.appendChild(cta);
+  }
+  function scan() { document.querySelectorAll('.vtp-empty:not([data-vpe])').forEach(decorate); }
+  VTPR.watch(scan);
+  scan();
+})();
+
+/* My day: one personal page with today's work, reviews and the week ahead */
+(() => {
+  if (window.__vmdInstalled) return; window.__vmdInstalled = true;
+  const ROUTE = 'my-day';
+  const esc = (v) => String(v ?? '').replace(/[&<>'"]/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
+  const route = () => (location.hash || '#dashboard').slice(1).split('?')[0];
+  const iso = (d) => d.toLocaleDateString('en-CA');
+  const addDays = (s, n) => { const d = new Date(s + 'T12:00:00'); d.setDate(d.getDate() + n); return iso(d); };
+  const fmt = (s, o) => new Date(s + 'T12:00:00').toLocaleDateString('en-GB', o);
+  const icon = '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"></circle><path d="M12 3v2M12 19v2M3 12h2M19 12h2M5.6 5.6 7 7M17 17l1.4 1.4M5.6 18.4 7 17M17 7l1.4-1.4"></path></svg>';
+  const PRI = {high: 'var(--vmd-c)', medium: 'var(--vmd-p)', low: 'var(--vmd-b)'};
+  const STAT = {todo: 'To do', in_progress: 'In progress', review: 'In review', done: 'Done'};
+  let token = 0;
+
+  function installNav() {
+    const nav = document.getElementById('vtp-nav'); if (!nav || nav.querySelector('[data-route="' + ROUTE + '"]')) return;
+    const group = nav.querySelector('[data-nav-group="dashboard"]'); if (!group || !group.querySelector('a')) return;
+    const a = document.createElement('a'); a.href = '#' + ROUTE; a.dataset.route = ROUTE;
+    a.innerHTML = '<i aria-hidden="true">' + icon + '</i><span>My day</span>'; group.appendChild(a);
+    if (route() === ROUTE) a.classList.add('active');
+  }
+
+  const api = (path) => fetch(VTP.root + path, {headers: {'X-WP-Nonce': VTP.nonce}, credentials: 'same-origin', cache: 'no-store'}).then((r) => r.json().then((d) => { if (!r.ok) throw new Error(d.message || 'Could not load.'); return d; }));
+
+  function taskCard(t, today, opts = {}) {
+    const late = t.due_date && t.due_date < today && t.status !== 'done';
+    const chip = late ? '<span class="vmd-tag late">Overdue</span>' : t.due_date === today ? '<span class="vmd-tag today">Today</span>' : t.due_date ? '<span class="vmd-tag">' + esc(fmt(t.due_date, {weekday: 'short', day: 'numeric', month: 'short'})) + '</span>' : '<span class="vmd-tag">No date</span>';
+    const sub = [t.project_name || t.client_name, opts.who && t.assignee_name ? t.assignee_name : '', late ? 'was due ' + fmt(t.due_date, {day: 'numeric', month: 'short'}) : (t.due_date === today ? 'due today' : '')].filter(Boolean).join(' · ');
+    return '<a class="vmd-task" href="#tasks" data-route="tasks" style="--vmd-a:' + (late ? 'var(--vmd-c)' : (PRI[t.priority] || PRI.medium)) + '"><div class="vmd-m"><b>' + esc(t.title) + '</b><small>' + esc(sub) + '</small></div><span class="vmd-st">' + esc(STAT[t.status] || t.status) + '</span>' + chip + '</a>';
+  }
+
+  function view(me, all) {
+    const isMgr = me.role === 'admin' || me.role === 'manager';
+    const today = iso(new Date());
+    const mine = all.filter((t) => Number(t.assignee_id) === Number(me.id));
+    const open = mine.filter((t) => t.status !== 'done');
+    const overdue = open.filter((t) => t.due_date && t.due_date < today);
+    const todayT = open.filter((t) => t.due_date === today);
+    const first = [...overdue, ...todayT].sort((a, b) => (a.due_date < b.due_date ? -1 : 1));
+    const firstIds = new Set(first.map((t) => t.id));
+    const rest = open.filter((t) => !firstIds.has(t.id) && t.status !== 'review').sort((a, b) => (a.due_date || '9999') < (b.due_date || '9999') ? -1 : 1);
+    const reviewList = isMgr ? all.filter((t) => t.status === 'review') : mine.filter((t) => t.status === 'review');
+    const mon = (() => { const d = new Date(); const k = (d.getDay() + 6) % 7; d.setDate(d.getDate() - k); return iso(d); })();
+    const doneWeek = mine.filter((t) => t.status === 'done' && String(t.completed_at || t.updated_at || '').slice(0, 10) >= mon).length;
+    const hour = new Date().getHours(); const greet = hour < 12 ? 'Good morning' : hour < 18 ? 'Good afternoon' : 'Good evening';
+    const first_name = String(me.name || '').split(/\s+/)[0] || 'there';
+    const n = first.length;
+    const sub = fmt(today, {weekday: 'long', day: 'numeric', month: 'long'}) + ' · ' + (n ? n + ' thing' + (n === 1 ? '' : 's') + ' need you today' + (overdue.length ? ', ' + overdue.length + ' overdue' : '') : 'nothing due today');
+    const kpi = (v, l, a) => '<div class="vmd-k" style="--vmd-a:' + a + '"><b>' + v + '</b><span>' + l + '</span></div>';
+    const week = Array.from({length: 7}, (_, i) => { const d = addDays(mon, i); const c = open.filter((t) => t.due_date === d).length; return '<div class="' + (d === today ? 'on' : '') + '">' + fmt(d, {weekday: 'short'}) + '<b>' + (c || '–') + '</b></div>'; }).join('');
+    const sec = (title, small, body, empty) => '<section class="vmd-sec"><h3>' + title + '<small>' + small + '</small></h3>' + (body || '<div class="vmd-empty">' + empty + '</div>') + '</section>';
+    const firstHtml = first.map((t) => taskCard(t, today)).join('');
+    const restHtml = rest.slice(0, 8).map((t) => taskCard(t, today)).join('');
+    const revHtml = reviewList.slice(0, 6).map((t) => taskCard(t, today, {who: isMgr})).join('');
+    const upcoming = open.filter((t) => t.due_date && t.due_date > today && t.due_date <= addDays(today, 7)).sort((a, b) => (a.due_date < b.due_date ? -1 : 1));
+    let upHtml = '', last = '';
+    upcoming.forEach((t) => { const lab = t.due_date === addDays(today, 1) ? 'Tomorrow' : fmt(t.due_date, {weekday: 'long', day: 'numeric', month: 'short'}); if (lab !== last) { upHtml += '<div class="vmd-day">' + esc(lab) + '</div>'; last = lab; } upHtml += '<a class="vmd-ev" href="#tasks" data-route="tasks" style="--vmd-a:' + (PRI[t.priority] || PRI.medium) + '"><i></i><div><b>' + esc(t.title) + '</b><small>' + esc(t.project_name || t.client_name || 'Task') + '</small></div></a>'; });
+    const by = {todo: 0, in_progress: 0, review: 0};
+    mine.forEach((t) => { if (by[t.status] !== undefined) by[t.status] += 1; });
+    return '<section class="vtp-page vmd-page"><header class="vmd-head"><div><h1>' + esc(greet) + ', <span>' + esc(first_name) + '</span></h1><p>' + esc(sub) + '</p></div><a class="vtp-btn primary" href="#tasks" data-route="tasks">Open all tasks</a></header>'
+      + '<div class="vmd-kp">' + kpi(todayT.length, 'Due today', 'var(--vmd-p)') + kpi(overdue.length, 'Overdue', 'var(--vmd-c)') + kpi(reviewList.length, isMgr ? 'Waiting for my review' : 'Waiting for approval', 'var(--vmd-b)') + kpi(doneWeek, 'Done this week', 'var(--vmd-k)') + '</div>'
+      + '<div class="vmd-grid"><div>'
+      + sec('Do first', 'overdue and due today', firstHtml, open.length ? 'Nothing due today. Pick something from the list below.' : 'You are all caught up. Enjoy it.')
+      + sec(isMgr ? 'Waiting for my review' : 'Waiting for approval', reviewList.length + ' task' + (reviewList.length === 1 ? '' : 's'), revHtml, isMgr ? 'No work is waiting for your review.' : 'Nothing you submitted is waiting for approval.')
+      + sec('My other tasks', rest.length + ' open', restHtml, 'No other open tasks.')
+      + '</div><aside>'
+      + '<div class="vmd-card"><h3>This week</h3><div class="vmd-wk">' + week + '</div><div class="vmd-load"><div><b>My open tasks</b><span>' + open.length + '</span></div><div class="vmd-pills"><em>' + by.todo + ' to do</em><em>' + by.in_progress + ' in progress</em><em>' + by.review + ' in review</em></div></div></div>'
+      + '<div class="vmd-card"><h3>Coming up <small>next 7 days</small></h3>' + (upHtml || '<div class="vmd-empty">Nothing else is due in the next 7 days.</div>') + '</div>'
+      + '</aside></div></section>';
+  }
+
+  async function render() {
+    const el = document.getElementById('vtp-view'); if (!el || route() !== ROUTE) return;
+    const t = ++token;
+    if (!el.querySelector('.vmd-page')) el.innerHTML = '<section class="vtp-page vmd-page"><div class="vmd-empty">Loading your day…</div></section>';
+    document.querySelectorAll('#vtp-nav a').forEach((l) => l.classList.toggle('active', l.dataset.route === ROUTE));
+    try {
+      const [b, tasks] = await Promise.all([api('bootstrap'), api('tasks')]);
+      if (t !== token || route() !== ROUTE) return;
+      el.innerHTML = view(b.user || {}, Array.isArray(tasks) ? tasks : []);
+    } catch (e) { if (t === token) el.innerHTML = '<section class="vtp-page vmd-page"><div class="vmd-empty">' + esc(e.message) + '</div></section>'; }
+  }
+
+  window.__vmdRender = render;
+  const kick = () => { installNav(); if (route() === ROUTE) { const el = document.getElementById('vtp-view'); if (el && !el.querySelector('.vmd-page')) render(); } };
+  VTPR.onHashChange(() => { installNav(); if (route() === ROUTE) render(); });
+  VTPR.watch(() => installNav());
+  [0, 500, 1400, 3000].forEach((ms) => setTimeout(kick, ms)); kick();
+  setInterval(() => { const el = document.getElementById('vtp-view'); if (route() === ROUTE && el && !el.querySelector('.vmd-page')) render(); }, 400);
+})();
+
+/* Employees: reporting manager field, no emergency contact, elegant profile view */
+(() => {
+  if (window.__vmeInstalled) return; window.__vmeInstalled = true;
+  const esc = (v) => String(v ?? '').replace(/[&<>'"]/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
+  let cache = null, cacheAt = 0;
+  const people = async (fresh) => {
+    if (!fresh && cache && Date.now() - cacheAt < 20000) return cache;
+    try {
+      const r = await fetch(VTP.root + 'employees?vme=' + Date.now(), {headers: {'X-WP-Nonce': VTP.nonce}, credentials: 'same-origin', cache: 'no-store'});
+      const d = await r.json(); cache = Array.isArray(d) ? d : []; cacheAt = Date.now();
+    } catch (_) { cache = cache || []; }
+    return cache;
+  };
+  const ROLE = {admin: 'Admin', manager: 'Manager', employee: 'Employee'};
+  const cap = (s) => String(s || '').replace(/_/g, ' ').replace(/^./, (c) => c.toUpperCase());
+  const MARITAL = {single: 'Single', married: 'Married', divorced: 'Divorced', widowed: 'Widowed', prefer_not_to_say: 'Prefer not to say'};
+  const date = (s) => { if (!s) return '—'; const d = new Date(String(s).slice(0, 10) + 'T12:00:00'); return isNaN(d) ? '—' : d.toLocaleDateString('en-GB', {day: 'numeric', month: 'short', year: 'numeric'}); };
+  const ini = (n) => String(n || '?').split(/\s+/).map((p) => p[0]).join('').slice(0, 2).toUpperCase();
+
+  /* 1. Forms: drop emergency contact, add Reporting manager */
+  async function fixForm(form) {
+    if (form.dataset.vme) return; form.dataset.vme = '1';
+    form.querySelectorAll('[name="emergencyName"],[name="emergencyPhone"],[name="emergencyRelation"]').forEach((inp) => {
+      const f = inp.closest('.vtp-field'); const row = f && f.parentElement; if (f) f.remove();
+      if (row && row.classList.contains('vtp-form-row') && !row.querySelector('.vtp-field')) row.remove();
+    });
+    const fid = form.getAttribute('id'); if (fid !== 'vtp-employee-edit-form' && fid !== 'vtp-employee-form') return;
+    const list = await people(true); if (!form.isConnected) return;
+    const idInp = form.querySelector('input[name="id"]'); const selfId = idInp ? Number(idInp.value) : 0;
+    const me = list.find((p) => Number(p.id) === selfId);
+    if (me && me.role === 'admin') return; // the admin reports to nobody
+    const opts = list.filter((p) => p.active !== false && Number(p.id) !== selfId).map((p) => '<option value="' + p.id + '"' + (me && Number(me.reportingManagerId) === Number(p.id) ? ' selected' : '') + '>' + esc(p.name) + (p.position ? ' · ' + esc(p.position) : '') + '</option>').join('');
+    const field = document.createElement('div'); field.className = 'vtp-field';
+    field.innerHTML = '<label>Reporting manager</label><select name="reportingManager"><option value="">No reporting manager</option>' + opts + '</select><small>The person this employee reports to.</small>';
+    const role = form.querySelector('[name="role"]'); const anchor = role ? (role.closest('.vtp-form-row') || role.closest('.vtp-field')) : form.querySelector('[name="phone"]')?.closest('.vtp-field');
+    if (anchor) anchor.after(field); else form.insertBefore(field, form.querySelector('button'));
+  }
+
+  /* 2. Profile view */
+  async function fixProfile(box) {
+    if (box.dataset.vmp) return; box.dataset.vmp = '1';
+    const email = (box.querySelector('.vtp-profile-grid strong') || {}).textContent || '';
+    const list = await people(true); if (!box.isConnected) return;
+    const p = list.find((x) => String(x.email).toLowerCase() === email.trim().toLowerCase()); if (!p) { box.querySelector('.vtp-profile-grid')?.style.removeProperty('visibility'); return; }
+    const hero = box.querySelector('.vtp-profile-hero'), grid = box.querySelector('.vtp-profile-grid'); if (!hero || !grid) return;
+    const av = String(p.availability || 'available');
+    const row = (k, v, href) => '<div class="vme-row"><span>' + k + '</span>' + (href && v && v !== '—' ? '<a href="' + esc(href) + '">' + esc(v) + '</a>' : '<b>' + esc(v || '—') + '</b>') + '</div>';
+    const isAdmin = p.role === 'admin';
+    const work = row('Work email', p.email, 'mailto:' + p.email) + row('Role', ROLE[p.role] || cap(p.role)) + (isAdmin ? '' : row('Reports to', p.reportingManagerName || 'Not assigned')) + row('Working hours', (p.workStart && p.workEnd) ? p.workStart + '–' + p.workEnd + ' · ' + String(p.workDays || '1,2,3,4,5').split(',').map((x) => ({1:'Mon',2:'Tue',3:'Wed',4:'Thu',5:'Fri',6:'Sat',7:'Sun'}[+x] || '')).filter(Boolean).join(' ') : 'Not set') + row('Joined', date(p.dateJoining));
+    const contact = row('Phone', p.phone || '—', p.phone ? 'tel:' + String(p.phone).replace(/\s/g, '') : '') + row('Personal email', p.personalEmail || '—', p.personalEmail ? 'mailto:' + p.personalEmail : '') + row('Home address', p.address || '—');
+    const personal = row('Marital status', MARITAL[p.maritalStatus] || '—');
+    const wa = p.phone ? 'https://wa.me/' + String(p.phone).replace(/[^\d]/g, '') : '';
+    const wrap = document.createElement('div'); wrap.className = 'vme-wrap';
+    wrap.innerHTML = '<div class="vme-cover"></div><div class="vme-head"><div class="vme-av">' + (p.avatar ? '<img src="' + esc(p.avatar) + '" alt="' + esc(p.name) + '">' : '<span>' + esc(ini(p.name)) + '</span>') + '</div>'
+      + '<div class="vme-id"><h2>' + esc(p.name) + '</h2><p>' + esc(p.position || 'Team member') + (p.department ? ' · ' + esc(p.department) : '') + '</p>'
+      + '<div class="vme-badges"><span class="vme-b role">' + esc(ROLE[p.role] || cap(p.role)) + '</span><span class="vme-b av-' + esc(av) + '"><i></i>' + esc(cap(av)) + '</span>' + (p.active === false ? '<span class="vme-b off">Inactive</span>' : '') + '</div></div></div>'
+      + '<div class="vme-actions"><a class="vme-act" href="mailto:' + esc(p.email) + '">Email</a>' + (p.phone ? '<a class="vme-act" href="tel:' + esc(String(p.phone).replace(/\s/g, '')) + '">Call</a><a class="vme-act" href="' + esc(wa) + '" target="_blank" rel="noopener">WhatsApp</a>' : '') + '</div>'
+      + '<div class="vme-cards"><section><h4>Work</h4>' + work + '</section><section><h4>Contact</h4>' + contact + '</section><section><h4>Personal</h4>' + personal + '</section></div>';
+    hero.replaceWith(wrap); grid.remove();
+  }
+
+  const scan = () => {
+    document.querySelectorAll('form').forEach((f) => { const fid = f.getAttribute('id'); if (!f.dataset.vme && (fid === 'vtp-employee-edit-form' || fid === 'vtp-employee-form' || fid === 'vtp-profile-details-form')) fixForm(f); });
+    document.querySelectorAll('.vtp-drawer-profile:not([data-vmp])').forEach(fixProfile);
+  };
+  VTPR.watch(scan); scan();
+})();
+
+/* Attendance: automatic working-hours tracking, team status, history, working-hours fields, hours versus delivery */
+(() => {
+  if (typeof VTP === 'undefined' || window.__vprInstalled) return; window.__vprInstalled = true;
+  const esc = (v) => String(v ?? '').replace(/[&<>'"]/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
+  const call = (path, body) => fetch(VTP.root + 'presence/' + path, {method: body ? 'POST' : 'GET', headers: {'X-WP-Nonce': VTP.nonce, 'Content-Type': 'application/json'}, credentials: 'same-origin', cache: 'no-store', body: body ? JSON.stringify(body) : undefined})
+    .then((r) => r.json().then((d) => { if (!r.ok) throw new Error(d.message || 'Something went wrong.'); return d; }));
+  const getJson = (path) => fetch(VTP.root + path, {headers: {'X-WP-Nonce': VTP.nonce}, credentials: 'same-origin', cache: 'no-store'}).then((r) => r.json());
+  const hhmm = (iso) => iso ? new Date(iso).toLocaleTimeString('en-GB', {hour: '2-digit', minute: '2-digit'}) : '—';
+  const dur = (s) => { s = Math.max(0, Math.round(s)); const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60); return h ? h + 'h ' + String(m).padStart(2, '0') + 'm' : m + 'm'; };
+  const ago = (iso) => { if (!iso) return 'never'; const m = Math.round((Date.now() - new Date(iso)) / 60000); if (m < 2) return 'just now'; if (m < 60) return m + ' min ago'; if (m < 1440) return Math.round(m / 60) + ' h ago'; return Math.round(m / 1440) + ' d ago'; };
+  const DAYS = ['', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+  let lastInput = Date.now(), mine = {status: 'no_schedule'}, role = '', people = [];
+  ['mousemove', 'keydown', 'click', 'scroll', 'touchstart'].forEach((e) => addEventListener(e, () => { lastInput = Date.now(); }, {passive: true}));
+
+  /* Heartbeat: runs in the background too. In a background tab the person counts as online. */
+  const ping = async () => {
+    const hidden = document.visibilityState === 'hidden';
+    try { const d = await call('ping', {active: hidden ? true : Date.now() - lastInput < 300000}); mine = d.me || mine; paintBars(); } catch (_) {}
+  };
+
+  /* Personal status bar (information only, nothing to press) */
+  const barHtml = () => {
+    const s = mine.status, sch = mine.schedule; let dot = 'idle', main = '', sub = '';
+    if (s === 'no_schedule') { if (role === 'admin') return ''; main = 'Working hours not set'; sub = 'Ask your admin to set your working hours. Tracking starts on its own once they are set.'; }
+    else if (s === 'leave') { dot = 'end'; main = 'On leave'; sub = 'Tracking is paused while you are on leave.'; }
+    else if (s === 'day_off') { dot = 'end'; main = 'Day off'; sub = 'Today is not one of your working days. Your hours are ' + sch.start + '–' + sch.end + '.'; }
+    else if (s === 'before') { main = 'Your shift starts at ' + sch.start; sub = 'Tracking begins automatically. There is nothing to press.'; }
+    else if (s === 'on_shift') { dot = 'work'; main = 'On shift · ' + sch.start + '–' + sch.end; sub = 'Online ' + dur(mine.online_seconds) + ' so far today · tracking is automatic'; }
+    else { dot = 'end'; main = 'Shift ended at ' + (sch ? sch.end : ''); sub = 'Online ' + dur(mine.online_seconds) + ' today'; }
+    return '<div class="vpc-main"><span class="vpc-dot ' + dot + '"></span><div><b>' + esc(main) + '</b><small>' + esc(sub) + '</small></div></div>';
+  };
+  const mountBars = () => {
+    const spots = [];
+    document.querySelectorAll('.vmd-head').forEach((h) => spots.push(h));
+    const d = document.querySelector('.vtp-d > .vtp-page-head'); if (d) spots.push(d);
+    spots.forEach((h) => { const nx = h.nextElementSibling; if (nx && nx.classList.contains('vpc-bar')) return; const b = document.createElement('section'); b.className = 'vpc-bar'; const html = barHtml(); b.innerHTML = html; b.hidden = !html; h.after(b); });
+  };
+  const paintBars = () => { document.querySelectorAll('.vpc-bar').forEach((b) => { const html = barHtml(); b.innerHTML = html; b.hidden = !html; }); };
+
+  /* Team panel (managers and admin) */
+  const PILL = {working: ['Working', 'work'], idle: ['Idle', 'brk'], not_online: ['Not online', 'bad'], before: ['Starts later', 'idle'], ended: ['Shift ended', 'end'], absent: ['Absent', 'bad'], off: ['Day off', 'lv'], leave: ['On leave', 'lv'], no_schedule: ['No hours set', 'brk']};
+  const teamHtml = (team) => {
+    const n = (...k) => team.filter((t) => k.includes(t.work)).length;
+    const rows = team.map((t) => {
+      const p = people.find((x) => Number(x.id) === Number(t.id)) || {}; const pill = PILL[t.work] || PILL.no_schedule; const sh = t.schedule ? t.schedule.start + '–' + t.schedule.end : '';
+      const meta = {working: 'Shift ' + sh + ' · online ' + dur(t.online_seconds), idle: 'Shift ' + sh + ' · online ' + dur(t.online_seconds), not_online: 'Shift ' + sh + (t.first_seen ? ' · last online ' + hhmm(t.last_online) : ' · not online yet'), before: 'Shift starts at ' + (t.schedule ? t.schedule.start : ''), ended: 'Online ' + dur(t.online_seconds) + ' · first ' + hhmm(t.first_seen), absent: 'Shift ' + sh + ' · never came online', off: 'Not a working day', leave: 'Away today', no_schedule: 'Set working hours in Edit employee'}[t.work] || '';
+      const on = t.online === 'online' ? 'Online now' : t.online === 'idle' ? 'Idle' : 'Last seen ' + ago(t.last_seen);
+      return '<div class="vpt-row"><span class="vpt-av">' + (p.avatar ? '<img src="' + esc(p.avatar) + '" alt="">' : esc(String(t.id))) + '<i class="vpt-on ' + esc(t.online) + '"></i></span><div class="vpt-id"><b>' + esc(p.name || 'Team member') + '</b><small>' + esc(on) + '</small></div><div class="vpt-st"><span class="vpc-pill ' + pill[1] + '">' + pill[0] + '</span><small>' + esc(meta) + '</small></div></div>';
+    }).join('');
+    return '<h3>Team right now<small>' + n('working') + ' working · ' + n('idle') + ' idle · ' + n('not_online', 'absent') + ' not online · ' + n('off', 'leave') + ' off or on leave</small></h3>' + (rows || '<div class="vpt-empty">No team members yet.</div>');
+  };
+  let teamTimer = null;
+  const loadTeam = async () => {
+    if (!document.querySelector('.vpt-panel')) return;
+    try { const d = await call('team'); if (!people.length) people = await getJson('employees').catch(() => []);
+      document.querySelectorAll('.vpt-panel').forEach((p) => { p.innerHTML = teamHtml(d.team); }); } catch (_) {}
+  };
+  const mountTeam = () => {
+    if (role !== 'admin' && role !== 'manager') return;
+    const targets = [];
+    const emp = document.querySelector('.vtp-employees-page > .vtp-grid.four'); if (emp) targets.push(emp);
+    const dash = document.querySelector('.vtp-d > .vtp-d-stats'); if (dash) targets.push(dash);
+    targets.forEach((t) => { const nx = t.nextElementSibling; if (nx && nx.classList.contains('vpt-panel')) return; const p = document.createElement('section'); p.className = 'vpt-panel vtp-card'; p.innerHTML = '<div class="vpt-empty">Loading team status…</div>'; t.after(p); loadTeam(); });
+    if (targets.length && !teamTimer) teamTimer = setInterval(loadTeam, 60000);
+  };
+
+  /* Attendance history inside the employee profile (managers) */
+  const mountHistory = async (box) => {
+    if (box.dataset.vpa || !box.dataset.vmp) return; if (role !== 'admin' && role !== 'manager') return;
+    const rowEl = box.querySelector('.vme-row a, .vme-row b'); if (!rowEl) return; box.dataset.vpa = '1';
+    const email = rowEl.textContent || '';
+    const list = people.length ? people : await getJson('employees').catch(() => []); people = list;
+    const p = list.find((x) => String(x.email).toLowerCase() === email.trim().toLowerCase()); if (!p || !box.isConnected) return;
+    try {
+      const d = await call('report?user=' + p.id + '&days=7'); if (!box.isConnected) return;
+      const rows = d.days.map((x) => '<tr' + (x.state === 'absent' ? ' class="vpa-abs"' : '') + '><td>' + esc(new Date(x.date + 'T12:00:00').toLocaleDateString('en-GB', {weekday: 'short', day: 'numeric', month: 'short'})) + '</td><td>' + esc(x.sched_start + '–' + x.sched_end) + '</td>' + (x.state === 'absent' ? '<td colspan="3">Not online during working hours</td>' : '<td>' + hhmm(x.first_seen) + '–' + hhmm(x.last_online) + '</td><td><b>' + dur(x.online_seconds) + '</b></td><td>' + dur(x.active_seconds) + '</td>') + '</tr>').join('');
+      const sec = document.createElement('section'); sec.className = 'vpa vme-cards';
+      sec.innerHTML = '<section><h4>Attendance · last 7 days</h4>' + (d.days.length ? '<table class="vpa-t"><thead><tr><th>Day</th><th>Shift</th><th>Online between</th><th>Online</th><th>Active</th></tr></thead><tbody>' + rows + '</tbody></table><div class="vpa-sum">Online = the portal was open. Active = mouse or keyboard used in the portal.</div>' : '<div class="vpt-empty">' + (p.workStart ? 'Nothing recorded yet.' : 'No working hours set for this person yet.') + '</div>') + '</section>';
+      (box.querySelector('.vme-cards') || box).after(sec);
+    } catch (_) {}
+  };
+
+  /* Working hours fields in the employee forms (admin) */
+  const mountSchedule = async (form) => {
+    form.dataset.vws = '1';
+    const list = await getJson('employees').catch(() => []); people = list.length ? list : people; if (!form.isConnected) return;
+    const idInp = form.querySelector('input[name="id"]'); const me = idInp ? list.find((x) => Number(x.id) === Number(idInp.value)) : null;
+    const isAdd = form.getAttribute('id') === 'vtp-employee-form';
+    const start = me ? (me.workStart || '') : (isAdd ? '09:00' : ''), end = me ? (me.workEnd || '') : (isAdd ? '17:00' : '');
+    const days = String((me && me.workDays) || '1,2,3,4,5').split(',').map(Number);
+    const chips = [1, 2, 3, 4, 5, 6, 7].map((d) => '<label class="vws-chip"><input type="checkbox" value="' + d + '"' + (days.includes(d) ? ' checked' : '') + '><span>' + DAYS[d] + '</span></label>').join('');
+    const f = document.createElement('div'); f.className = 'vtp-field vws';
+    f.innerHTML = '<label>Working hours <small>(Beirut time)</small></label><div class="vws-times"><label>Start<input type="time" name="workStart" value="' + esc(start) + '"></label><label>End<input type="time" name="workEnd" value="' + esc(end) + '"></label></div><div class="vws-days">' + chips + '</div><input type="hidden" name="workDays" value="' + days.join(',') + '"><small>Attendance is tracked automatically during these hours and days. Leave the times empty for no tracking.</small>';
+    const btn = form.querySelector('button.primary, button:not([type])') || form.querySelector('button'); form.insertBefore(f, btn);
+    f.addEventListener('change', () => { f.querySelector('[name=workDays]').value = [...f.querySelectorAll('.vws-chip input:checked')].map((c) => c.value).join(','); });
+  };
+
+  /* Hours versus delivery (managers and admin) */
+  let range = 'week';
+  const iso = (d) => d.toLocaleDateString('en-CA');
+  const fromOf = () => { const d = new Date(); if (range === 'month') return iso(new Date(d.getFullYear(), d.getMonth(), 1)); const k = (d.getDay() + 6) % 7; d.setDate(d.getDate() - k); return iso(d); };
+  async function loadDelivery(panel) {
+    try {
+      const from = fromOf(), today = iso(new Date());
+      const [sum, tasks, ppl] = await Promise.all([call('summary?from=' + from), getJson('tasks'), getJson('employees')]);
+      const hours = {}; (sum.users || []).forEach((u) => { hours[u.user_id] = u; });
+      const rows = (Array.isArray(ppl) ? ppl : []).filter((p) => p.active !== false).map((p) => {
+        const mineT = (Array.isArray(tasks) ? tasks : []).filter((t) => Number(t.assignee_id) === Number(p.id));
+        const done = mineT.filter((t) => ['review', 'done'].includes(t.status) && String(t.submitted_at || t.completed_at || '').slice(0, 10) >= from).length;
+        const open = mineT.filter((t) => ['todo', 'in_progress'].includes(t.status));
+        const late = open.filter((t) => t.due_date && t.due_date < today).length;
+        const h = hours[p.id] || {worked_seconds: 0, active_seconds: 0, days: 0};
+        const flag = h.worked_seconds >= 36000 && !done;
+        return '<tr' + (flag ? ' class="vph-flag"' : '') + '><td><b>' + esc(p.name) + '</b></td><td>' + dur(h.worked_seconds) + '</td><td>' + dur(h.active_seconds) + '</td><td>' + h.days + '</td><td>' + done + '</td><td>' + open.length + '</td><td' + (late ? ' class="vph-late"' : '') + '>' + late + '</td></tr>' + (flag ? '<tr class="vph-note"><td colspan="7">Online for many hours but no delivery recorded in this period.</td></tr>' : '');
+      }).join('');
+      panel.innerHTML = '<h3>Online time and delivery<span class="vph-tabs"><button data-vph="week" class="' + (range === 'week' ? 'on' : '') + '">This week</button><button data-vph="month" class="' + (range === 'month' ? 'on' : '') + '">This month</button></span></h3><div class="vph-wrap"><table class="vph-t"><thead><tr><th>Person</th><th>Online</th><th>Active</th><th>Days</th><th>Delivered</th><th>Open</th><th>Overdue</th></tr></thead><tbody>' + rows + '</tbody></table></div><p class="vph-help">Online time is for monitoring only. Delivered = tasks submitted for review or approved in this period. Open = to do or in progress.</p>';
+    } catch (_) { panel.innerHTML = '<div class="vpt-empty">Could not load online time and delivery.</div>'; }
+  }
+  document.addEventListener('click', (e) => { const b = e.target.closest('[data-vph]'); if (!b) return; range = b.dataset.vph; const p = b.closest('.vph-panel'); if (p) loadDelivery(p); });
+  const mountDelivery = () => {
+    if (role !== 'admin' && role !== 'manager') return;
+    const anchor = document.querySelector('.vtp-employees-page > .vpt-panel'); if (!anchor) return;
+    const nx = anchor.nextElementSibling; if (nx && nx.classList.contains('vph-panel')) return;
+    const p = document.createElement('section'); p.className = 'vph-panel vtp-card'; p.innerHTML = '<div class="vpt-empty">Loading…</div>'; anchor.after(p); loadDelivery(p);
+  };
+
+  const scan = () => {
+    mountBars(); mountTeam(); mountDelivery();
+    document.querySelectorAll('form').forEach((f) => { const id = f.getAttribute('id'); if (!f.dataset.vws && (id === 'vtp-employee-edit-form' || id === 'vtp-employee-form') && (role === 'admin' || role === 'manager')) mountSchedule(f); });
+    document.querySelectorAll('.vtp-drawer-profile[data-vmp]:not([data-vpa])').forEach(mountHistory);
+  };
+  VTPR.watch(scan);
+  (async () => { try { const b = await getJson('bootstrap'); role = (b.user || {}).role || ''; } catch (_) {} scan(); })();
+  ping(); setInterval(ping, 45000); document.addEventListener('visibilitychange', () => { if (!document.hidden) ping(); });
+})();
+
+/* Employee portal: no Sales, Website management or Finance sections for the employee role */
+(() => {
+  if (typeof VTP === 'undefined' || window.__vpnavInstalled) return; window.__vpnavInstalled = true;
+  const BLOCK = new Set(['inquiries', 'quotations', 'client-reviews', 'clients', 'our-work', 'pricing', 'invoices', 'analytics', 'payslips', 'finance', 'digital-library']);
+  let on = false;
+  const guard = () => { if (!on) return; const k = (location.hash || '').replace(/^#\/?/, '').split(/[/?]/)[0]; if (BLOCK.has(k)) location.hash = '#dashboard'; };
+  const tidy = () => {
+    document.querySelectorAll('#vtp-nav [data-nav-group="sales"], #vtp-nav [data-nav-group="website"], #vtp-nav [data-nav-group="finance"]').forEach((g) => { g.style.display = 'none'; });
+    document.querySelectorAll('.vtp-project-section .vpe-sub').forEach((p) => { if (!p.dataset.vpn) { p.dataset.vpn = '1'; p.textContent = 'Projects you are assigned to will appear here.'; } });
+    document.querySelectorAll('.vtp-project-section .vpe-cta').forEach((b) => b.remove());
+  };
+  fetch(VTP.root + 'bootstrap', {headers: {'X-WP-Nonce': VTP.nonce}, credentials: 'same-origin', cache: 'no-store'}).then((r) => r.json()).then((b) => {
+    if (((b.user || {}).role || '') !== 'employee') return; on = true;
+    tidy(); guard(); VTPR.onHashChange(guard);
+    VTPR.watch(tidy);
+  }).catch(() => {});
 })();

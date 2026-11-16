@@ -5,6 +5,58 @@ defined('ABSPATH') || exit;
 final class VPM_Cron {
     public static function boot(): void {
         add_action('vpm_daily_lead_scan', [self::class, 'daily_scan']);
+        add_filter('cron_schedules', [self::class, 'cx_schedules']);
+        add_action('vpm_cx_email_digest', static function () { VPM_Cron::cx_email_digest(); });
+        add_action('init', static function () { VPM_Cron::cx_baseline(); if (!wp_next_scheduled('vpm_cx_email_digest')) wp_schedule_event(time() + 120, 'vpm_5min', 'vpm_cx_email_digest'); });
+    }
+
+    public static function cx_schedules($s) { $s['vpm_5min'] = ['interval' => 300, 'display' => 'Every 5 minutes']; return $s; }
+
+    // One-time baseline: existing unread chat notifications are treated as already emailed so nobody gets a backlog.
+    public static function cx_baseline(): void {
+        if (get_option('vpm_cx_mail_baselined')) return;
+        global $wpdb; $N = VPM_Permissions::table('notifications'); $by = [];
+        foreach ((array) $wpdb->get_results("SELECT id,user_id,title,body FROM {$N} WHERE type IN ('connect_message','connect_mention') AND is_read=0", ARRAY_A) as $r) $by[(int) $r['user_id']][(int) $r['id']] = md5($r['title'] . '|' . $r['body']);
+        foreach ($by as $uid => $m) update_user_meta($uid, 'vpm_cx_mailed', $m);
+        update_option('vpm_cx_mail_baselined', 1, false);
+    }
+
+    // Emails each person one digest of chat messages they have left unread (10 min) or @mentions (2 min).
+    public static function cx_email_digest(int $only = 0, bool $dry = false): array {
+        global $wpdb; $N = VPM_Permissions::table('notifications'); $now = current_time('timestamp'); $report = []; $by = [];
+        foreach ((array) $wpdb->get_results("SELECT id,user_id,type,title,body,created_at FROM {$N} WHERE type IN ('connect_message','connect_mention') AND is_read=0 ORDER BY id ASC", ARRAY_A) as $r) $by[(int) $r['user_id']][] = $r;
+        if ($dry && $only && empty($by[$only])) $by[$only] = [['id' => 0, 'user_id' => $only, 'type' => 'connect_message', 'title' => '2 new messages in Sample group', 'body' => 'Sample: this is how a message preview will look.', 'created_at' => current_time('mysql')]];
+        foreach ($by as $uid => $list) {
+            if ($only && $uid !== $only) continue;
+            if (!$dry && get_user_meta($uid, 'vpm_cx_email_off', true)) continue;
+            $mailed = (array) get_user_meta($uid, 'vpm_cx_mailed', true); $due = [];
+            foreach ($list as $r) {
+                $h = md5($r['title'] . '|' . $r['body']);
+                if (!$dry && (($mailed[(int) $r['id']] ?? '') === $h)) continue;
+                $need = $r['type'] === 'connect_mention' ? 120 : 600;
+                if ($dry || ($now - strtotime((string) $r['created_at'])) >= $need) $due[] = $r;
+            }
+            if (!$due) continue;
+            $user = get_userdata($uid); if (!$user || !is_email($user->user_email)) continue;
+            $msgs = 0; $mention = null; $items = '';
+            foreach ($due as $r) {
+                $msgs += preg_match('/^(\d+) new messages/', (string) $r['title'], $m) ? (int) $m[1] : 1;
+                if ($r['type'] === 'connect_mention' && !$mention) $mention = $r['title'];
+                $items .= '<div style="padding:10px 0;border-bottom:1px solid #eee"><strong>' . esc_html($r['title']) . '</strong><br><span style="color:#555">' . esc_html($r['body']) . '</span></div>';
+            }
+            $subject = $mention ?: ('You have ' . $msgs . ' unread message' . ($msgs === 1 ? '' : 's') . ' on Vibes Connect');
+            $html = '<div style="font-family:Arial,sans-serif;max-width:560px;margin:0 auto;color:#222"><h2 style="color:#5a2d93;margin:0 0 6px">Vibes Connect</h2><p style="margin:0 0 12px">Hi ' . esc_html(strtok($user->display_name, ' ')) . ', you have unread messages:</p>' . $items . '<p style="margin:18px 0"><a href="' . esc_url(home_url('/team-portal/')) . '" style="background:#5a2d93;color:#fff;padding:10px 18px;border-radius:8px;text-decoration:none">Open Vibes Connect</a></p><p style="font-size:12px;color:#888">Don’t want these emails? Tap the bell icon at the top of Vibes Connect to turn them off.</p></div>';
+            $entry = ['user' => $uid, 'subject' => $subject, 'items' => count($due), 'sent' => false];
+            if (!$dry) {
+                $ok = wp_mail($user->user_email, $subject, $html, ['Content-Type: text/html; charset=UTF-8', 'From: Vibes Agency <admin@vibesagency.co>']);
+                $entry['sent'] = (bool) $ok;
+                if ($ok) foreach ($due as $r) $mailed[(int) $r['id']] = md5($r['title'] . '|' . $r['body']);
+                $mailed = array_intersect_key($mailed, array_flip(array_map(static function ($r) { return (int) $r['id']; }, $list)));
+                update_user_meta($uid, 'vpm_cx_mailed', $mailed);
+            } else { $entry['html_length'] = strlen($html); }
+            $report[] = $entry;
+        }
+        return $report;
     }
 
     public static function daily_scan(): void {

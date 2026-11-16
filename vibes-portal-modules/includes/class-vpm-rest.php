@@ -269,6 +269,22 @@ final class VPM_REST {
         register_rest_route(self::NS, '/connect/conversations/(?P<id>\d+)', [
             'methods' => 'PATCH', 'callback' => [self::class, 'connect_update_conversation'], 'permission_callback' => [self::class, 'connect'],
         ]);
+        register_rest_route(self::NS, '/connect/conversations/(?P<id>\d+)', [
+            'methods' => 'DELETE', 'callback' => [self::class, 'connect_delete_conversation'], 'permission_callback' => [self::class, 'connect'],
+        ]);
+        register_rest_route(self::NS, '/connect/push-status', ['methods' => 'GET', 'callback' => ['VPM_Push', 'rest_status'], 'permission_callback' => static function () { return current_user_can('manage_options'); }]);
+        register_rest_route(self::NS, '/connect/push-key', ['methods' => 'GET', 'callback' => ['VPM_Push', 'rest_key'], 'permission_callback' => [self::class, 'connect']]);
+        register_rest_route(self::NS, '/connect/push-subscribe', ['methods' => 'POST', 'callback' => ['VPM_Push', 'rest_subscribe'], 'permission_callback' => [self::class, 'connect']]);
+        register_rest_route(self::NS, '/connect/push-unsubscribe', ['methods' => 'POST', 'callback' => ['VPM_Push', 'rest_unsubscribe'], 'permission_callback' => [self::class, 'connect']]);
+        register_rest_route(self::NS, '/connect/email-pref', ['methods' => 'GET,POST', 'callback' => [self::class, 'connect_email_pref'], 'permission_callback' => [self::class, 'connect']]);
+        register_rest_route(self::NS, '/connect/email-digest', ['methods' => 'POST', 'callback' => [self::class, 'connect_email_digest_dry'], 'permission_callback' => static function () { return current_user_can('manage_options'); }]);
+        $vpm_admin = static function () { return current_user_can('manage_options'); };
+        register_rest_route(self::NS, '/connect/deleted', ['methods' => 'GET', 'callback' => [self::class, 'connect_deleted_list'], 'permission_callback' => $vpm_admin]);
+        register_rest_route(self::NS, '/connect/deleted/(?P<id>\d+)/restore', ['methods' => 'POST', 'callback' => [self::class, 'connect_deleted_restore'], 'permission_callback' => $vpm_admin]);
+        register_rest_route(self::NS, '/connect/deleted/(?P<id>\d+)', ['methods' => 'DELETE', 'callback' => [self::class, 'connect_deleted_purge'], 'permission_callback' => $vpm_admin]);
+        register_rest_route(self::NS, '/connect/conversations/(?P<id>\d+)/image', [
+            'methods' => 'POST,DELETE', 'callback' => [self::class, 'connect_group_image'], 'permission_callback' => [self::class, 'connect'],
+        ]);
         register_rest_route(self::NS, '/connect/conversations/(?P<id>\d+)/thread', [
             'methods' => 'GET', 'callback' => [self::class, 'connect_thread'], 'permission_callback' => [self::class, 'connect'],
         ]);
@@ -503,9 +519,12 @@ final class VPM_REST {
             $row['members'] = $members[$cid] ?? [];
             $row['pinned'] = in_array($cid, $pins, true);
             $row['can_manage'] = in_array($row['type'], ['group', 'project', 'task'], true) && ($row['created_by'] === $me || $admin);
+            $gimgs = (array) get_option('vpm_cx_group_images', []); $row['image_url'] = (string) ($gimgs[(int) $row['id']] ?? '');
             $row['sort_at'] = $row['last_message_at'] ?: $row['updated_at'];
         }
         unset($row);
+        $vpm_del = (array) get_option('vpm_cx_deleted', []); $vpm_hid = (array) get_user_meta($me, 'vpm_cx_hidden', true);
+        $rows = array_values(array_filter($rows, static function ($r) use ($vpm_del, $vpm_hid) { $i = (int) $r['id']; if (isset($vpm_del[$i])) return false; if (isset($vpm_hid[$i]) && (int) $r['last_message_id'] <= (int) $vpm_hid[$i]) return false; return true; }));
         usort($rows, static function ($a, $b) { return strcmp((string) $b['sort_at'], (string) $a['sort_at']); });
         return rest_ensure_response($rows);
     }
@@ -564,7 +583,84 @@ final class VPM_REST {
     private static function assert_conversation(WP_REST_Request $request): int|WP_Error {
         $id = absint($request['id']);
         if (!$id || !VPM_Permissions::user_can_read_conversation($id)) return self::error('forbidden', 'You are not a member of this conversation.', 403);
+        $vpm_d = (array) get_option('vpm_cx_deleted', []); if (isset($vpm_d[$id])) return self::error('deleted', 'This conversation was deleted.', 404);
         return $id;
+    }
+
+    public static function connect_delete_conversation(WP_REST_Request $request) {
+        global $wpdb; $id = self::assert_conversation($request); if (is_wp_error($id)) return $id;
+        $conv = $wpdb->get_row($wpdb->prepare('SELECT id,type,created_by FROM ' . self::table('connect_conversations') . ' WHERE id=%d', $id), ARRAY_A);
+        if (!$conv) return self::error('not_found', 'Conversation not found.', 404);
+        if ($conv['type'] === 'general') return self::error('protected', 'The General Team chat cannot be deleted.', 400);
+        if ($conv['type'] === 'direct') {
+            $last = (int) $wpdb->get_var($wpdb->prepare('SELECT MAX(id) FROM ' . self::table('connect_messages') . ' WHERE conversation_id=%d', $id));
+            $hidden = (array) get_user_meta(get_current_user_id(), 'vpm_cx_hidden', true); $hidden[$id] = $last;
+            update_user_meta(get_current_user_id(), 'vpm_cx_hidden', $hidden);
+            return rest_ensure_response(['id' => $id, 'deleted' => 'for_you']);
+        }
+        $can = self::cx_can_manage($id, $c2); if (is_wp_error($can)) return $can;
+        if (!$can) return self::error('forbidden', 'Only the group creator or an administrator can delete it.', 403);
+        $del = (array) get_option('vpm_cx_deleted', []); $del[$id] = ['at' => current_time('mysql'), 'by' => get_current_user_id()];
+        update_option('vpm_cx_deleted', $del, false);
+        return rest_ensure_response(['id' => $id, 'deleted' => 'for_everyone']);
+    }
+
+    public static function connect_deleted_list(WP_REST_Request $request) {
+        global $wpdb; $del = (array) get_option('vpm_cx_deleted', []); $out = [];
+        foreach ($del as $cid => $info) {
+            $cid = (int) $cid; $c = $wpdb->get_row($wpdb->prepare('SELECT id,title,type FROM ' . self::table('connect_conversations') . ' WHERE id=%d', $cid), ARRAY_A);
+            if (!$c) { unset($del[$cid]); continue; }
+            $out[] = ['id' => $cid, 'title' => $c['title'], 'type' => $c['type'], 'deleted_at' => (string) ($info['at'] ?? ''), 'messages' => (int) $wpdb->get_var($wpdb->prepare('SELECT COUNT(*) FROM ' . self::table('connect_messages') . ' WHERE conversation_id=%d', $cid)), 'members' => (int) $wpdb->get_var($wpdb->prepare('SELECT COUNT(*) FROM ' . self::table('connect_members') . ' WHERE conversation_id=%d', $cid))];
+        }
+        return rest_ensure_response($out);
+    }
+
+    public static function connect_deleted_restore(WP_REST_Request $request) {
+        $id = absint($request['id']); $del = (array) get_option('vpm_cx_deleted', []);
+        if (!isset($del[$id])) return self::error('not_found', 'That conversation is not in the deleted list.', 404);
+        unset($del[$id]); update_option('vpm_cx_deleted', $del, false);
+        return rest_ensure_response(['restored' => $id]);
+    }
+
+    public static function connect_deleted_purge(WP_REST_Request $request) {
+        global $wpdb; $id = absint($request['id']); $del = (array) get_option('vpm_cx_deleted', []);
+        if (!isset($del[$id])) return self::error('not_deletable', 'Only conversations already in the deleted list can be permanently removed.', 400);
+        $c = $wpdb->get_row($wpdb->prepare('SELECT id,type FROM ' . self::table('connect_conversations') . ' WHERE id=%d', $id), ARRAY_A);
+        if ($c && $c['type'] === 'general') return self::error('protected', 'The General Team chat cannot be deleted.', 400);
+        $M = self::table('connect_messages'); $A = self::table('connect_attachments'); $R = self::table('connect_reactions');
+        $mids = array_map('intval', (array) $wpdb->get_col($wpdb->prepare("SELECT id FROM {$M} WHERE conversation_id=%d", $id)));
+        $files = 0;
+        if ($mids) {
+            $in = implode(',', $mids);
+            $base = trailingslashit(wp_upload_dir()['basedir']) . 'vpm-private';
+            foreach ((array) $wpdb->get_col("SELECT file_path FROM {$A} WHERE message_id IN ({$in})") as $path) {
+                $real = $path ? realpath($path) : false; $root = realpath($base);
+                if ($real && $root && strpos($real, $root . DIRECTORY_SEPARATOR) === 0 && is_file($real) && @unlink($real)) $files++;
+            }
+            $wpdb->query("DELETE FROM {$A} WHERE message_id IN ({$in})");
+            $wpdb->query("DELETE FROM {$R} WHERE message_id IN ({$in})");
+        }
+        $wpdb->delete($M, ['conversation_id' => $id]);
+        $wpdb->delete(self::table('connect_reads'), ['conversation_id' => $id]);
+        $wpdb->delete(self::table('connect_members'), ['conversation_id' => $id]);
+        $wpdb->delete(self::table('connect_conversations'), ['id' => $id]);
+        unset($del[$id]); update_option('vpm_cx_deleted', $del, false);
+        $imgs = (array) get_option('vpm_cx_group_images', []);
+        if (isset($imgs[$id])) { $u = wp_upload_dir(); $f = $u['basedir'] . '/vpm-groups/' . basename((string) wp_parse_url($imgs[$id], PHP_URL_PATH)); if (is_file($f)) @unlink($f); unset($imgs[$id]); update_option('vpm_cx_group_images', $imgs, false); }
+        return rest_ensure_response(['purged' => $id, 'messages' => count($mids), 'files' => $files]);
+    }
+
+    public static function connect_email_pref(WP_REST_Request $request) {
+        $me = get_current_user_id();
+        if ($request->get_method() === 'POST') {
+            $on = !empty(self::body($request)['on']);
+            if ($on) delete_user_meta($me, 'vpm_cx_email_off'); else update_user_meta($me, 'vpm_cx_email_off', 1);
+        }
+        return rest_ensure_response(['on' => !get_user_meta($me, 'vpm_cx_email_off', true)]);
+    }
+
+    public static function connect_email_digest_dry(WP_REST_Request $request) {
+        return rest_ensure_response(['dry_run' => VPM_Cron::cx_email_digest(get_current_user_id(), true)]);
     }
 
     public static function connect_messages(WP_REST_Request $request) {
@@ -829,6 +925,11 @@ final class VPM_REST {
                 $wpdb->insert($N, ['user_id' => $uid, 'type' => 'connect_message', 'title' => 'New message in ' . $title, 'body' => $preview, 'object_type' => 'connect_conversation', 'object_id' => $conversation_id, 'created_at' => $now]);
             }
         }
+        $ctype = (string) $wpdb->get_var($wpdb->prepare('SELECT type FROM ' . self::table('connect_conversations') . ' WHERE id=%d', $conversation_id));
+        foreach ($members as $uid) {
+            $mn = in_array($uid, $mentioned, true);
+            VPM_Push::queue($uid, ['title' => $mn ? $sender_name . ' mentioned you in ' . $title : ($ctype === 'direct' ? $sender_name : $title), 'body' => $mn || $ctype === 'direct' ? wp_trim_words($content, 18, '…') : $preview, 'tag' => 'vc-' . $conversation_id, 'url' => '/team-portal/', 'icon' => VPM_Push::ICON]);
+        }
     }
 
     public static function connect_typing(WP_REST_Request $request) {
@@ -871,6 +972,31 @@ final class VPM_REST {
         if ($title === '') return self::error('empty_title', 'Give the group a name.');
         $wpdb->update(self::table('connect_conversations'), ['title' => mb_substr($title, 0, 120)], ['id' => $id]);
         return rest_ensure_response(['id' => $id, 'title' => mb_substr($title, 0, 120)]);
+    }
+
+    public static function connect_group_image(WP_REST_Request $request) {
+        $id = self::assert_conversation($request); if (is_wp_error($id)) return $id;
+        $can = self::cx_can_manage($id, $conv); if (is_wp_error($can)) return $can;
+        if (!$can) return self::error('forbidden', 'Only the group creator or an administrator can change the group photo.', 403);
+        $imgs = (array) get_option('vpm_cx_group_images', []);
+        if ($request->get_method() === 'DELETE') {
+            unset($imgs[$id]); update_option('vpm_cx_group_images', $imgs, false);
+            return rest_ensure_response(['id' => $id, 'image_url' => '']);
+        }
+        $file = $request->get_file_params()['file'] ?? ($_FILES['file'] ?? null);
+        if (!is_array($file) || !empty($file['error'])) return self::error('missing_file', 'Choose a picture to upload.');
+        if ((int) $file['size'] > 4 * 1024 * 1024) return self::error('too_large', 'The picture must be 4 MB or smaller.');
+        $mimes = ['jpg|jpeg' => 'image/jpeg', 'png' => 'image/png', 'webp' => 'image/webp', 'gif' => 'image/gif'];
+        $check = wp_check_filetype_and_ext($file['tmp_name'], $file['name'], $mimes);
+        if (empty($check['type']) || !@getimagesize($file['tmp_name'])) return self::error('bad_type', 'Use a JPG, PNG, WebP or GIF picture.');
+        require_once ABSPATH . 'wp-admin/includes/file.php';
+        $filter = static function ($dirs) { $dirs['subdir'] = '/vpm-groups'; $dirs['path'] = $dirs['basedir'] . '/vpm-groups'; $dirs['url'] = $dirs['baseurl'] . '/vpm-groups'; return $dirs; };
+        add_filter('upload_dir', $filter);
+        $up = wp_handle_upload($file, ['test_form' => false, 'mimes' => $mimes, 'unique_filename_callback' => static function ($d, $n, $e) use ($id) { return 'group-' . $id . '-' . wp_generate_password(8, false) . $e; }]);
+        remove_filter('upload_dir', $filter);
+        if (!empty($up['error']) || empty($up['url'])) return self::error('upload_failed', 'The picture could not be saved.', 500);
+        $imgs[$id] = esc_url_raw($up['url']); update_option('vpm_cx_group_images', $imgs, false);
+        return rest_ensure_response(['id' => $id, 'image_url' => $imgs[$id]]);
     }
 
     public static function connect_add_members(WP_REST_Request $request) {

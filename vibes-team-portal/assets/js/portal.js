@@ -346,18 +346,29 @@
     else route();
   }, true);
   let ourWorkNavObserverTimer;
+  let ourWorkNavWatchRegistered = false;
   function observeOurWorkNav() {
     const nav = $('#vtp-nav');
     if (!nav) return;
     normalizeOurWorkNav();
     normalizeReportsNav();
-    if (window.VTPOurWorkNavObserver) window.VTPOurWorkNavObserver.disconnect();
-    const observer = new MutationObserver(() => {
-      clearTimeout(ourWorkNavObserverTimer);
-      ourWorkNavObserverTimer = window.setTimeout(() => { normalizeOurWorkNav(); normalizeReportsNav(); }, 0);
-    });
-    observer.observe(nav, {childList: true, subtree: true});
-    window.VTPOurWorkNavObserver = observer;
+    // This runs at 4 fixed delays after load (nav may not exist yet at delay 0, hence the
+    // retries), but the watcher itself is registered with VTPR only once, so repeated calls
+    // here don't accumulate duplicate permanent callbacks.
+    if (ourWorkNavWatchRegistered) return;
+    ourWorkNavWatchRegistered = true;
+    if (window.VTPR) {
+      window.VTPR.watch(() => {
+        clearTimeout(ourWorkNavObserverTimer);
+        ourWorkNavObserverTimer = window.setTimeout(() => { normalizeOurWorkNav(); normalizeReportsNav(); }, 0);
+      });
+    } else {
+      const observer = new MutationObserver(() => {
+        clearTimeout(ourWorkNavObserverTimer);
+        ourWorkNavObserverTimer = window.setTimeout(() => { normalizeOurWorkNav(); normalizeReportsNav(); }, 0);
+      });
+      observer.observe(nav, {childList: true, subtree: true});
+    }
   }
   [0, 300, 1000, 2000].forEach(delay => window.setTimeout(observeOurWorkNav, delay));
 

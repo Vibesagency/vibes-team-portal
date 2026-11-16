@@ -739,7 +739,7 @@ async function renderCRM() {
   document.addEventListener('click', (event) => { const button = event.target.closest && event.target.closest('#vpm-new-group'); if (!button) return; event.preventDefault(); event.stopImmediatePropagation(); openReliableGroupDialog(); }, true);
   const observe = () => { if ((location.hash || '').split('?')[0] === '#connect') renderEmployeeShortcuts(); };
   // Connect rendering is event-driven; avoid a document-wide observer loop.
-  window.addEventListener('hashchange', () => { membersCache = null; setTimeout(observe, 80); });
+  VTPR.onHashChange(() => { membersCache = null; setTimeout(observe, 80); });
   observe();
 })();
 
@@ -851,12 +851,12 @@ async function renderCRM() {
   const triggerModuleRoute = () => { const route = currentRoute(); if (!['finance', 'crm', 'payslips'].includes(route)) return; const link = document.querySelector('#vtp-nav a[href="#' + route + '"]'); if (link && !link.classList.contains('active')) link.click(); };
   const run = () => { addRepairs(); syncDashboardEmployees(); triggerModuleRoute(); };
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', run, {once:true}); else run();
-  window.addEventListener('hashchange', () => window.setTimeout(run, 250));
+  VTPR.onHashChange(() => window.setTimeout(run, 250));
   window.setTimeout(triggerModuleRoute, 650);
   window.setTimeout(triggerModuleRoute, 2200);
   window.setTimeout(triggerModuleRoute, 4200);
   const view = document.getElementById('vtp-view');
-  [view, document.getElementById('vtp-nav')].filter(Boolean).forEach((target) => new MutationObserver(() => { if (currentRoute() === 'dashboard') syncDashboardEmployees(); else triggerModuleRoute(); }).observe(target, {childList:true, subtree:true}));
+  VTPR.watch(() => { if (currentRoute() === 'dashboard') syncDashboardEmployees(); else triggerModuleRoute(); });
 })();
 
 
@@ -905,8 +905,8 @@ async function renderCRM() {
     }
   };
   const roots = [document.querySelector('#vtp-view'), document.querySelector('#vtp-drawer')].filter(Boolean);
-  roots.forEach(root => new MutationObserver(applyFinanceCurrencyControls).observe(root, { childList: true, subtree: true }));
-  window.addEventListener('hashchange', applyFinanceCurrencyControls);
+  VTPR.watch(applyFinanceCurrencyControls);
+  VTPR.onHashChange(applyFinanceCurrencyControls);
   window.setTimeout(applyFinanceCurrencyControls, 500);
 })();
 
@@ -1198,10 +1198,10 @@ async function renderCRM() {
   const isStandalone = () => window.matchMedia('(display-mode: standalone)').matches || navigator.standalone;
   const u8 = (s) => { const p = '='.repeat((4 - s.length % 4) % 4); const r = atob((s + p).replace(/-/g, '+').replace(/_/g, '/')); return Uint8Array.from(r, (c) => c.charCodeAt(0)); };
   async function pushIsOn() { if (!pushSupported()) return false; const reg = await navigator.serviceWorker.getRegistration('/'); return !!(reg && await reg.pushManager.getSubscription()); }
-  function paintPush(on, n = 0) { const b = document.querySelector('#vcx-root [data-act="pushpref"]'); if (b) { b.hidden = !pushSupported(); b.classList.toggle('off', !on); b.title = on ? 'Phone notifications are on - tap to turn off' : 'Turn on phone notifications'; } else if (n < 20) setTimeout(() => paintPush(on, n + 1), 400); }
+  function paintPush(on, n = 0) { const b = document.querySelector('#vcx-root [data-act="pushpref"]'); if (b) { b.hidden = false; b.classList.toggle('off', !on); b.title = on ? 'Phone notifications are on - tap to turn off' : 'Turn on phone notifications'; } else if (n < 20) setTimeout(() => paintPush(on, n + 1), 400); }
   async function togglePush() {
     try {
-      if (!pushSupported()) { toast('This browser does not support notifications', 'error'); return; }
+      if (!pushSupported()) { toast(/iphone|ipad|ipod/i.test(navigator.userAgent) ? 'On iPhone, first install the app: tap Share, then Add to Home Screen, then open Vibes from your home screen and tap this again' : 'This browser does not support notifications', 'error'); return; }
       const reg = await navigator.serviceWorker.ready; const cur = await reg.pushManager.getSubscription();
       if (cur) { await api('connect/push-unsubscribe', {method: 'POST', body: {endpoint: cur.endpoint}}); await cur.unsubscribe(); paintPush(false); toast('Phone notifications turned off'); return; }
       if (/iphone|ipad|ipod/i.test(navigator.userAgent) && !isStandalone()) { toast('On iPhone, first tap Share, then Add to Home Screen, then open the Vibes app and turn this on there', 'error'); return; }
@@ -1611,7 +1611,7 @@ async function renderCRM() {
     if (b.parentElement.querySelector('[data-vcf]')) return;
     const n = document.createElement('button'); n.className = 'vtp-btn small'; n.dataset.vcf = b.dataset.copyProjectReview; n.textContent = 'Client feedback'; b.after(n);
   });
-  new MutationObserver(inject).observe(document.body, {childList: true, subtree: true}); inject();
+  VTPR.watch(inject); inject();
   const close = () => document.getElementById('vcf-modal')?.remove();
   async function open(id) {
     close();
@@ -1631,7 +1631,6 @@ async function renderCRM() {
   }
   document.addEventListener('click', (e) => { const b = e.target.closest('[data-vcf]'); if (b) { e.preventDefault(); open(b.dataset.vcf); } });
 })();
-
 
 /* Client Reviews: admin page listing every project's client review, approvals and comments */
 (() => {
@@ -1688,8 +1687,8 @@ async function renderCRM() {
   document.addEventListener('click', (e) => { const c = e.target.closest('[data-vcl-filter]'); if (!c) return; filter = c.dataset.vclFilter; const el = document.getElementById('vtp-view'); if (el) el.innerHTML = view(); });
   window.__vclRender = render;
   const kick = () => { installNav(); if (route() === ROUTE) { const el = document.getElementById('vtp-view'); if (el && !el.querySelector('.vcl-page')) render(); } };
-  window.addEventListener('hashchange', () => { installNav(); if (route() === ROUTE) render(); });
-  new MutationObserver(() => installNav()).observe(document.body, {childList: true, subtree: true});
+  VTPR.onHashChange(() => { installNav(); if (route() === ROUTE) render(); });
+  VTPR.watch(() => installNav());
   [0, 500, 1400, 3000].forEach((ms) => setTimeout(kick, ms)); kick();
 })();
 /* Client Reviews: route watcher (router uses pushState, no hashchange) */
@@ -1707,7 +1706,7 @@ async function renderCRM() {
     bar.innerHTML = `<label>Month <input type="month" class="vpe-month" value="${ym}"></label><button type="button" class="vpm-btn vpe-print">Print monthly expenses</button><span class="vpe-msg"></span>`;
     h.after(bar);
   });
-  new MutationObserver(inject).observe(document.body, {childList: true, subtree: true}); inject();
+  VTPR.watch(inject); inject();
   document.addEventListener('click', async (e) => {
     const b = e.target.closest('.vpe-print'); if (!b) return;
     const bar = b.closest('.vpe-bar'), month = bar.querySelector('.vpe-month').value, msg = bar.querySelector('.vpe-msg');
@@ -1734,7 +1733,6 @@ async function renderCRM() {
     b.disabled = false;
   });
 })();
-
 /* Files & Brand: Library (Drive-linked shared folders) + page organiser */
 (() => {
   if (window.__vplInstalled) return; window.__vplInstalled = true;
@@ -1908,7 +1906,7 @@ async function renderCRM() {
     const b = document.createElement('a'); b.href = '#'; b.setAttribute('data-vpx-test', ''); b.textContent = 'Send test notification';
     dd.insertBefore(b, dd.lastElementChild);
   };
-  new MutationObserver(addTest).observe(document.body, {childList: true, subtree: true}); addTest();
+  VTPR.watch(addTest); addTest();
   document.addEventListener('click', async (e) => {
     const b = e.target.closest('[data-vpx-test]'); if (!b) return; e.preventDefault();
     b.textContent = 'Sending…';
@@ -1984,10 +1982,10 @@ async function renderCRM() {
     if (!social && !loading) { loading = true; try { const [s, l] = await Promise.all([api('announcements/social'), api('announcements')]); social = s.items; emoji = s.emoji || emoji; list = l; } catch (e) { loading = false; return; } loading = false; }
     if (social) enhance();
   }
-  new MutationObserver(() => { if (document.querySelector('#vtp-announcement-list')) tick(); }).observe(document.body, {childList: true, subtree: true});
+  VTPR.watch(() => { if (document.querySelector('#vtp-announcement-list')) tick(); });
   setInterval(tick, 1500);
   // Reset caches when leaving the page so a fresh visit reloads counts.
-  window.addEventListener('hashchange', () => { if (!/announcements/.test(location.hash)) { social = null; list = null; pick = null; } });
+  VTPR.onHashChange(() => { if (!/announcements/.test(location.hash)) { social = null; list = null; pick = null; } });
 
   /* ---- optional photo on the announcement form ---- */
   const shrink = (file) => new Promise((resolve) => {
@@ -2005,7 +2003,7 @@ async function renderCRM() {
     f.innerHTML = `<label>Photo <span class="vtp-muted">(optional, not recommended)</span></label><input type="file" accept="image/jpeg,image/png,image/webp,image/gif" data-vso-photo><small>A clear title and message work best. Add a photo only when it really helps. JPG, PNG, WebP or GIF.</small>${cur ? `<div class="vso-cur"><img src="${esc(cur)}" alt=""><label><input type="checkbox" data-vso-photo-remove> Remove current photo</label></div>` : ''}<div class="vso-prev" hidden></div>`;
     const btn = form.querySelector('button.primary, button[type=submit], button:last-of-type'); form.insertBefore(f, btn);
   };
-  new MutationObserver(addField).observe(document.body, {childList: true, subtree: true});
+  VTPR.watch(addField);
   document.addEventListener('change', (e) => {
     const i = e.target.closest('[data-vso-photo]'); if (!i) return; const prev = i.closest('.vso-field').querySelector('.vso-prev'); const f = i.files[0];
     if (!f) { prev.hidden = true; prev.innerHTML = ''; return; }

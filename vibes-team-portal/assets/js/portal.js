@@ -1793,9 +1793,9 @@
   VTPR.onHashChange(watch);
   [300, 1000, 2000, 4000].forEach(delay => window.setTimeout(watch, delay));
   const nav = document.querySelector('#vtp-nav');
-  if (nav) new MutationObserver(addNavLink).observe(nav, { childList: true, subtree: true });
+  if (nav) VTPR.watch(addNavLink);
   const view = document.querySelector('#vtp-view');
-  if (view) new MutationObserver(() => { if (location.hash.split('?')[0] === '#payslips' && !view.querySelector('.vtp-payslips-page')) window.setTimeout(page, 60); }).observe(view, { childList: true, subtree: false });
+  if (view) VTPR.watch(() => { if (location.hash.split('?')[0] === '#payslips' && !view.querySelector('.vtp-payslips-page')) window.setTimeout(page, 60); });
 })();
 
 
@@ -2002,8 +2002,7 @@
   };
   let timer;
   const schedule = () => { clearTimeout(timer); timer = setTimeout(enhance, 160); };
-  const observer = new MutationObserver(schedule);
-  [document.querySelector('#vtp-view'), document.querySelector('#vtp-drawer')].filter(Boolean).forEach(root => observer.observe(root, { childList: true, subtree: true }));
+  VTPR.watch(schedule);
   VTPR.onHashChange(schedule);
   setTimeout(enhance, 500);
 })();
@@ -2068,8 +2067,7 @@
   };
   let timer;
   const schedule = () => { clearTimeout(timer); timer = setTimeout(enhance, 120); };
-  const observer = new MutationObserver(schedule);
-  [document.querySelector('#vtp-view'), document.querySelector('#vtp-drawer')].filter(Boolean).forEach(root => observer.observe(root, { childList: true, subtree: true }));
+  VTPR.watch(schedule);
   document.addEventListener('change', event => {
     if (event.target.matches('[name="hrEmploymentStatus"],[name="role"]')) schedule();
   });
@@ -2126,7 +2124,7 @@
     catch (error) { button.disabled = false; button.textContent = cancel ? 'Cancel request' : 'Delete & restore'; window.alert(error.message || 'Unable to update leave.'); }
   }, true);
   const root = document.querySelector('#vtp-view');
-  if (root) new MutationObserver(() => setTimeout(enhanceLeave, 80)).observe(root, { childList: true, subtree: true });
+  if (root) VTPR.watch(() => setTimeout(enhanceLeave, 80));
   VTPR.onHashChange(() => setTimeout(enhanceLeave, 150));
   setTimeout(enhanceLeave, 500);
 })();
@@ -2151,7 +2149,7 @@
       if (text && !link.title) { link.title = text; link.setAttribute('aria-label', text); }
     });
     label();
-    new MutationObserver(label).observe(nav, { childList: true, subtree: true });
+    VTPR.watch(label);
     const close = () => { app.classList.remove('vtp-nav-open'); if (more) more.setAttribute('aria-expanded', 'false'); };
     if (more) more.addEventListener('click', () => {
       const open = !app.classList.contains('vtp-nav-open');

@@ -258,6 +258,7 @@ add_filter('rest_pre_dispatch', 'vce_intercept_quotation', 1, 3);
 
 add_action('wp_footer', static function () {
     echo '<script>';
+    // priority 30: must print after wp_print_footer_scripts (prio 20) so modules.js (VTPR) is defined first
     echo <<<'JS'
 (function(){
   const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[c]));
@@ -403,9 +404,10 @@ add_action('wp_footer', static function () {
     reference.render=wrapped;
   }
   const observer=()=>{patchQuotationReference();addTemplateSection();addContractFields();organizeQuotationCards();addLongTermPreviewStyles();enhanceLongTermPreview();};
-  new MutationObserver(observer).observe(document.body,{childList:true,subtree:true}); observer();
+  if (window.VTPR) { window.VTPR.watch(observer); } else { new MutationObserver(observer).observe(document.body,{childList:true,subtree:true}); }
+  observer();
 })();
 JS
     ;
     echo '</script>';
-});
+}, 30);

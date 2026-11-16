@@ -47,7 +47,7 @@ document.addEventListener('visibilitychange',function(){if(document.visibilitySt
 document.addEventListener('submit',function(e){var f=e.target;if(!f||f.id!=='ga-form')return;e.preventDefault();e.stopImmediatePropagation();var b=f.querySelector('[data-ga="save"]');if(b)b.click();},true);
 window.VTPGraphicLibraryLoad=graphicLoad;
 function boot(){addNav();if(location.hash.split('?')[0]==='#video-library')load();if(location.hash.split('?')[0]==='#graphic-library')graphicLoad();workBoot();}
-window.addEventListener('hashchange',function(){setTimeout(boot,250);});
+(window.VTPR ? window.VTPR.onHashChange(function(){setTimeout(boot,250);}) : window.addEventListener('hashchange',function(){setTimeout(boot,250);}));
 
 var workConfigs={
   motion:{route:'motion-library',label:'Video & Motion Design',platform:'motion',description:'Manage Video & Motion Design portfolio projects without editing the website code.'},
@@ -76,5 +76,5 @@ window.VTPVideoLibraryLoad=load;
 var __vtpBootStarted=false;
 function bootWhenReady(){if(!document.getElementById('vtp-nav'))return;if(!__vtpBootStarted){__vtpBootStarted=true;boot();}}
 if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',bootWhenReady);else bootWhenReady();
-new MutationObserver(function(){if(!window.VTPWorkNavManaged&&document.getElementById('vtp-nav')&&!document.querySelector('[data-vtp-work-group]'))bootWhenReady();}).observe(document.body,{childList:true,subtree:true});
+(window.VTPR ? window.VTPR.watch(function(){if(!window.VTPWorkNavManaged&&document.getElementById('vtp-nav')&&!document.querySelector('[data-vtp-work-group]'))bootWhenReady();}) : new MutationObserver(function(){if(!window.VTPWorkNavManaged&&document.getElementById('vtp-nav')&&!document.querySelector('[data-vtp-work-group]'))bootWhenReady();}).observe(document.body,{childList:true,subtree:true}))
 })();

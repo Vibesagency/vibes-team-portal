@@ -7,7 +7,11 @@
 if (!defined('ABSPATH')) { exit; }
 add_action('wp_enqueue_scripts', function () {
     if (!is_page('team-portal')) { return; }
-    wp_register_script('vtp-video-admin', plugins_url('video-admin.js', __FILE__), [], '1.0.16', true);
+    // Unconditional dependency on vpm-modules (defines window.VTPR): WP resolves script
+    // dependencies by handle at print time, not at registration time, so this is safe even
+    // though both plugins register on the same wp_enqueue_scripts priority and this callback
+    // can run before vpm-modules' own registration call.
+    wp_register_script('vtp-video-admin', plugins_url('video-admin.js', __FILE__), ['vpm-modules'], '1.0.16', true);
     wp_enqueue_script('vtp-video-admin');
     wp_localize_script('vtp-video-admin', 'VTP', [
         'root' => esc_url_raw(rest_url('vibes/v1/')),

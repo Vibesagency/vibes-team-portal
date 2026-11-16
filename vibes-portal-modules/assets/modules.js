@@ -9,7 +9,7 @@ window.VTPR = window.VTPR || (() => {
   const watchers = []; const hashFns = [];
   let queued = false;
   const flush = () => { queued = false; watchers.forEach((fn) => { try { fn(); } catch (e) {} }); };
-  new MutationObserver(() => { if (!queued) { queued = true; requestAnimationFrame(flush); } }).observe(document.body, {childList: true, subtree: true});
+  new MutationObserver(() => { if (!queued) { queued = true; queueMicrotask(flush); } }).observe(document.body, {childList: true, subtree: true});
   window.addEventListener('hashchange', () => { hashFns.forEach((fn) => { try { fn(); } catch (e) {} }); });
   return { watch(fn) { watchers.push(fn); }, onHashChange(fn) { hashFns.push(fn); } };
 })();

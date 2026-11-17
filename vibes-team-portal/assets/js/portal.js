@@ -890,7 +890,30 @@
     for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber++) {
       const page = await pdf.getPage(pageNumber);
       const content = await page.getTextContent();
-      text += content.items.map(item => item.str).join(' ') + '\n';
+      // pdf.js returns text as a flat list of positioned runs with no line
+      // breaks of its own, so joining item.str with spaces collapses an
+      // entire page (every service row, every price) into one giant line
+      // and no row-level pattern can ever match it. Rebuild visual lines by
+      // grouping runs that share a y-position (their vertical baseline, with
+      // a small tolerance for rounding/kerning noise), then order those
+      // lines top-to-bottom and the runs within each line left-to-right.
+      const lines = [];
+      for (const item of content.items) {
+        if (!item.str || !item.str.trim()) continue;
+        const y = item.transform[5];
+        const x = item.transform[4];
+        let line = lines.find(candidate => Math.abs(candidate.y - y) < 3);
+        if (!line) {
+          line = { y, parts: [] };
+          lines.push(line);
+        }
+        line.parts.push({ x, str: item.str });
+      }
+      lines.sort((a, b) => b.y - a.y);
+      for (const line of lines) {
+        line.parts.sort((a, b) => a.x - b.x);
+        text += line.parts.map(part => part.str).join(' ').replace(/\s+/g, ' ').trim() + '\n';
+      }
     }
     return text;
   }

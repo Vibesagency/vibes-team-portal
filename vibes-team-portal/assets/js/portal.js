@@ -1056,10 +1056,21 @@
       toast('Approve the quotation before creating the project.', true);
       return;
     }
-    const employees = (await load('employees', true)).filter(user => user.active);
+    const [employeesRaw, taskRows] = await Promise.all([load('employees', true), load('tasks', true)]);
+    const employees = employeesRaw.filter(user => user.active);
+    const openCounts = {};
+    taskRows.forEach(task => {
+      if (task.status === 'done') return;
+      const id = Number(task.assignee_id);
+      if (id) openCounts[id] = (openCounts[id] || 0) + 1;
+    });
+    const workloadLabel = user => {
+      const count = openCounts[Number(user.id)] || 0;
+      return count === 1 ? '1 open task' : `${count} open tasks`;
+    };
     const items = Array.isArray(quote.items) ? quote.items : [];
       const dueDate = dateAfter(14);
-    const employeeOptions = employees.map(user => `<option value="${user.id}">${esc(user.name)} — ${esc(user.position || user.role)}</option>`).join('');
+    const employeeOptions = employees.map(user => `<option value="${user.id}">${esc(user.name)} — ${esc(user.position || user.role)} (${workloadLabel(user)})</option>`).join('');
     const assignments = items.map((item, index) => `<div class="vtp-assignment-row" data-item-index="${index}"><div><strong>${esc(item.label || `Service ${index + 1}`)}</strong><span>${esc(item.description)}</span><small>Qty ${Number(item.quantity || 1)} · ${money(item.total, quote.currency)}</small></div><label class="vtp-assignment-assignee-field">Assign to<select name="assignmentAssignee" required><option value="">Select employee</option>${employeeOptions}</select></label><label>Due date<input name="assignmentDue" type="date" value="${dueDate}" required></label><label>Priority<select name="assignmentPriority"><option value="medium">Medium</option><option value="high">High</option><option value="low">Low</option></select></label></div>`).join('');
     openDrawer(`<h2>Assign quotation services</h2><p>Create one task for each approved service — send them all to one employee, or divide them between several. Yearly services automatically receive twelve monthly delivery tasks.</p><form id="vtp-quote-project-form" class="vtp-form"><input type="hidden" name="quotationId" value="${quote.id}"><div class="vtp-field"><label>Project name</label><input name="name" value="${esc((quote.company || quote.client_name) + ' — ' + quote.quote_number)}" required></div><div class="vtp-form-row"><div class="vtp-field"><label>Project lead</label><select name="leadUserId"><option value="">Unassigned</option>${employeeOptions}</select></div><div class="vtp-field"><label>Overall delivery date</label><input name="dueDate" type="date" value="${dueDate}"></div></div><div class="vtp-field"><label>Internal Vibes Drive folder (optional)</label><input name="internalDriveUrl" type="url" value="${esc(driveTaskFolder)}" placeholder="Paste the project folder link"><small>The portal stores the folder plan and links each service task to its delivery cycle.</small></div><div class="vtp-field"><label>Client Drive folder (optional)</label><input name="clientDriveUrl" type="url" placeholder="Add the private client folder link when ready"></div><div class="vtp-field"><div class="vtp-card-head"><label>Service assignments</label></div><div class="vtp-quote-mode-toggle" role="tablist"><button type="button" class="vtp-btn small" data-assign-mode="single" aria-pressed="false">Send all to one employee</button><button type="button" class="vtp-btn small active" data-assign-mode="split" aria-pressed="true">Divide between employees</button></div><div class="vtp-field" id="vtp-quote-bulk-assign" hidden><label>Assign every service to<select data-bulk-assignee><option value="">Select employee</option>${employeeOptions}</select></label></div><div class="vtp-assignment-list">${assignments}</div></div><div class="vtp-alert">Employees see only their own tasks. Once a delivery cycle is complete, send the client a secure review link. Invoice creation waits for client approval.</div><button class="vtp-btn primary">Create project, tasks & notifications</button></form>`);
   }

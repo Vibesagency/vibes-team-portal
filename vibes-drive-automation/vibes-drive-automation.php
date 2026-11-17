@@ -1247,4 +1247,48 @@ add_action('rest_api_init', static function () {
             ];
         },
     ]);
+
+    // --- TEMPORARY QA CLEANUP ROUTES (added 2026-11-17, remove after test cleanup) ---
+    // These only ever touch a Drive file/folder whose *name* contains both
+    // "ZZ" and "TEST" (case-insensitive), verified server-side right before
+    // any delete, regardless of what ID is passed in. Safe to leave registered
+    // briefly, but intended to be removed once QA test artifacts are cleared.
+    register_rest_route('vibes-drive/v1', '/qa-find', [
+        'methods' => 'GET',
+        'permission_callback' => static function () { return current_user_can('manage_options'); },
+        'callback' => static function () {
+            $result = vibes_drive_api('GET', 'files', null, [
+                'q' => "name contains 'ZZ' and trashed=false",
+                'fields' => 'files(id,name,mimeType,parents,webViewLink)',
+                'pageSize' => 200,
+            ]);
+            if (is_wp_error($result)) { return $result; }
+            $files = $result['files'] ?? [];
+            // Narrow further client-side to names containing both markers.
+            $files = array_values(array_filter($files, static function ($f) {
+                $n = strtolower((string) ($f['name'] ?? ''));
+                return strpos($n, 'zz') !== false && strpos($n, 'test') !== false;
+            }));
+            return $files;
+        },
+    ]);
+    register_rest_route('vibes-drive/v1', '/qa-delete', [
+        'methods' => 'POST',
+        'permission_callback' => static function () { return current_user_can('manage_options'); },
+        'args' => ['fileId' => ['required' => true, 'sanitize_callback' => 'sanitize_text_field']],
+        'callback' => static function (WP_REST_Request $request) {
+            $file_id = sanitize_text_field((string) $request->get_param('fileId'));
+            if (!$file_id) { return new WP_Error('vibes_drive_qa_missing_id', 'fileId is required.', ['status' => 400]); }
+            $meta = vibes_drive_api('GET', 'files/' . rawurlencode($file_id), null, ['fields' => 'id,name,trashed']);
+            if (is_wp_error($meta)) { return $meta; }
+            $name = strtolower((string) ($meta['name'] ?? ''));
+            if (strpos($name, 'zz') === false || strpos($name, 'test') === false) {
+                return new WP_Error('vibes_drive_qa_unsafe', 'Refusing to delete: name does not contain both "ZZ" and "TEST": ' . ($meta['name'] ?? ''), ['status' => 400]);
+            }
+            $deleted = vibes_drive_api('DELETE', 'files/' . rawurlencode($file_id));
+            if (is_wp_error($deleted)) { return $deleted; }
+            return ['status' => 'deleted', 'id' => $file_id, 'name' => $meta['name'] ?? ''];
+        },
+    ]);
+    // --- END TEMPORARY QA CLEANUP ROUTES ---
 });

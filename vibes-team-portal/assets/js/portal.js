@@ -934,17 +934,56 @@
     let totalMatch;
     while ((totalMatch = totalRegex.exec(text)) !== null) total = toNumber(totalMatch[2]);
 
-    // Line items: lines of reasonable length ending in a currency-like
-    // number, skipping obvious non-service lines (totals, tax, headers).
-    const skipWords = /\b(sub ?total|vat|tax|total|grand total|page \d|quotation|invoice|date|valid until|client|prepared by|prepared for)\b/i;
-    const lineRegex = new RegExp(`^(.{3,90}?)\\s+(?:SAR|SR|USD|AED|\\$|ر\\.س)?\\s*(${numberToken})\\s*(?:SAR|SR|USD|AED|ر\\.س)?$`, 'i');
+    // Line items: lines ending in a currency-like number, skipping obvious
+    // non-service lines (totals, tax, headers, and "Issued ..." / "Valid
+    // until ..." style dates — a bare date reads as "text + number" just
+    // like a priced row, so without this a header date would otherwise show
+    // up as a bogus service costing its own year).
+    const skipWords = /\b(sub ?total|vat|tax|total|grand total|page \d|quotation|invoice|issued|date|valid until|client|prepared by|prepared for|price)\b/i;
+    const dateLineRegex = /\b\d{1,2}(?:st|nd|rd|th)?\s+(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\s+\d{4}\b|\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\s+\d{1,2}(?:st|nd|rd|th)?,?\s+\d{4}\b/i;
+    // No upper bound on the description length: a hard cap here used to
+    // make the whole line fail to match at all (and the item silently
+    // vanish) whenever a service description happened to run long — it
+    // never changed which part of the line was treated as the price, since
+    // the match is anchored to the end of the line and the description is
+    // matched lazily, so removing it only stops good rows from being
+    // dropped.
+    const lineRegex = new RegExp(`^(.{3,}?)\\s+(?:SAR|SR|USD|AED|\\$|ر\\.س)?\\s*(${numberToken})\\s*(?:SAR|SR|USD|AED|ر\\.س)?$`, 'i');
+
+    // A table cell's description sometimes wraps onto its own visual line
+    // above the line carrying the price (a long service description in a
+    // narrow column lands on a different baseline than its price, so
+    // extractPdfText's one-line-per-baseline grouping splits them apart).
+    // Carry forward up to two such lines so the full description survives
+    // instead of being cut down to whatever fragment happens to sit right
+    // before the price. Only lines that read like flowing text qualify (a
+    // lowercase letter is required, so an all-caps column header like
+    // "DESCRIPTION PRICE" is never mistaken for a wrapped description), and
+    // only short ones (a stray paragraph is not a wrapped label).
+    const looksLikeWrapCandidate = line => line.length >= 3 && line.length <= 120 && /[a-z]/.test(line);
+    const MAX_PENDING_LINES = 2;
+
     const items = [];
+    let pending = [];
     for (const rawLine of text.split('\n')) {
       const line = rawLine.replace(/\s+/g, ' ').trim();
-      if (!line || skipWords.test(line)) continue;
+      if (!line) { pending = []; continue; }
+      if (skipWords.test(line) || dateLineRegex.test(line)) { pending = []; continue; }
       const match = line.match(lineRegex);
-      if (!match) continue;
-      const description = match[1].replace(/[-•.\s]+$/, '').trim();
+      if (!match) {
+        if (looksLikeWrapCandidate(line)) {
+          pending.push(line);
+          if (pending.length > MAX_PENDING_LINES) pending.shift();
+        } else {
+          pending = [];
+        }
+        continue;
+      }
+      let description = match[1].replace(/[-•.\s]+$/, '').trim();
+      if (pending.length) {
+        description = `${pending.join(' ')} ${description}`.replace(/\s+/g, ' ').trim();
+        pending = [];
+      }
       const price = toNumber(match[2]);
       if (!description || description.length < 3 || !(price > 0)) continue;
       items.push({ description, quantity: 1, unitPrice: price });

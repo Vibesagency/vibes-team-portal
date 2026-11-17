@@ -1060,8 +1060,8 @@
     const items = Array.isArray(quote.items) ? quote.items : [];
       const dueDate = dateAfter(14);
     const employeeOptions = employees.map(user => `<option value="${user.id}">${esc(user.name)} — ${esc(user.position || user.role)}</option>`).join('');
-    const assignments = items.map((item, index) => `<div class="vtp-assignment-row" data-item-index="${index}"><div><strong>${esc(item.label || `Service ${index + 1}`)}</strong><span>${esc(item.description)}</span><small>Qty ${Number(item.quantity || 1)} · ${money(item.total, quote.currency)}</small></div><label>Assign to<select name="assignmentAssignee" required><option value="">Select employee</option>${employeeOptions}</select></label><label>Due date<input name="assignmentDue" type="date" value="${dueDate}" required></label><label>Priority<select name="assignmentPriority"><option value="medium">Medium</option><option value="high">High</option><option value="low">Low</option></select></label></div>`).join('');
-    openDrawer(`<h2>Assign quotation services</h2><p>Create one task for each approved service. Every service can go to a different employee. Yearly services automatically receive twelve monthly delivery tasks.</p><form id="vtp-quote-project-form" class="vtp-form"><input type="hidden" name="quotationId" value="${quote.id}"><div class="vtp-field"><label>Project name</label><input name="name" value="${esc((quote.company || quote.client_name) + ' — ' + quote.quote_number)}" required></div><div class="vtp-form-row"><div class="vtp-field"><label>Project lead</label><select name="leadUserId"><option value="">Unassigned</option>${employeeOptions}</select></div><div class="vtp-field"><label>Overall delivery date</label><input name="dueDate" type="date" value="${dueDate}"></div></div><div class="vtp-field"><label>Internal Vibes Drive folder (optional)</label><input name="internalDriveUrl" type="url" value="${esc(driveTaskFolder)}" placeholder="Paste the project folder link"><small>The portal stores the folder plan and links each service task to its delivery cycle.</small></div><div class="vtp-field"><label>Client Drive folder (optional)</label><input name="clientDriveUrl" type="url" placeholder="Add the private client folder link when ready"></div><div class="vtp-field"><label>Service assignments</label><div class="vtp-assignment-list">${assignments}</div></div><div class="vtp-alert">Employees see only their own tasks. Once a delivery cycle is complete, send the client a secure review link. Invoice creation waits for client approval.</div><button class="vtp-btn primary">Create project, tasks & notifications</button></form>`);
+    const assignments = items.map((item, index) => `<div class="vtp-assignment-row" data-item-index="${index}"><div><strong>${esc(item.label || `Service ${index + 1}`)}</strong><span>${esc(item.description)}</span><small>Qty ${Number(item.quantity || 1)} · ${money(item.total, quote.currency)}</small></div><label class="vtp-assignment-assignee-field">Assign to<select name="assignmentAssignee" required><option value="">Select employee</option>${employeeOptions}</select></label><label>Due date<input name="assignmentDue" type="date" value="${dueDate}" required></label><label>Priority<select name="assignmentPriority"><option value="medium">Medium</option><option value="high">High</option><option value="low">Low</option></select></label></div>`).join('');
+    openDrawer(`<h2>Assign quotation services</h2><p>Create one task for each approved service — send them all to one employee, or divide them between several. Yearly services automatically receive twelve monthly delivery tasks.</p><form id="vtp-quote-project-form" class="vtp-form"><input type="hidden" name="quotationId" value="${quote.id}"><div class="vtp-field"><label>Project name</label><input name="name" value="${esc((quote.company || quote.client_name) + ' — ' + quote.quote_number)}" required></div><div class="vtp-form-row"><div class="vtp-field"><label>Project lead</label><select name="leadUserId"><option value="">Unassigned</option>${employeeOptions}</select></div><div class="vtp-field"><label>Overall delivery date</label><input name="dueDate" type="date" value="${dueDate}"></div></div><div class="vtp-field"><label>Internal Vibes Drive folder (optional)</label><input name="internalDriveUrl" type="url" value="${esc(driveTaskFolder)}" placeholder="Paste the project folder link"><small>The portal stores the folder plan and links each service task to its delivery cycle.</small></div><div class="vtp-field"><label>Client Drive folder (optional)</label><input name="clientDriveUrl" type="url" placeholder="Add the private client folder link when ready"></div><div class="vtp-field"><div class="vtp-card-head"><label>Service assignments</label></div><div class="vtp-quote-mode-toggle" role="tablist"><button type="button" class="vtp-btn small" data-assign-mode="single" aria-pressed="false">Send all to one employee</button><button type="button" class="vtp-btn small active" data-assign-mode="split" aria-pressed="true">Divide between employees</button></div><div class="vtp-field" id="vtp-quote-bulk-assign" hidden><label>Assign every service to<select data-bulk-assignee><option value="">Select employee</option>${employeeOptions}</select></label></div><div class="vtp-assignment-list">${assignments}</div></div><div class="vtp-alert">Employees see only their own tasks. Once a delivery cycle is complete, send the client a secure review link. Invoice creation waits for client approval.</div><button class="vtp-btn primary">Create project, tasks & notifications</button></form>`);
   }
 
   async function projectManageDrawer(project, publish = false) {
@@ -1293,6 +1293,30 @@
       const upload = form.querySelector('#vtp-quote-pdf-upload');
       if (upload) upload.hidden = mode !== 'pdf';
       if (form.elements.sourceType) form.elements.sourceType.value = mode === 'pdf' ? 'pdf_upload' : 'form';
+      return;
+    }
+
+    const assignMode = event.target.closest('[data-assign-mode]');
+    if (assignMode) {
+      // Sits above <form id="vtp-quote-project-form"> (not inside it), same
+      // as the quotation-upload mode toggle above — look the form up by id.
+      const form = document.getElementById('vtp-quote-project-form');
+      if (!form) return;
+      const mode = assignMode.dataset.assignMode;
+      form.querySelectorAll('[data-assign-mode]').forEach(button => {
+        const active = button === assignMode;
+        button.classList.toggle('active', active);
+        button.setAttribute('aria-pressed', String(active));
+      });
+      const bulkField = form.querySelector('#vtp-quote-bulk-assign');
+      if (bulkField) bulkField.hidden = mode !== 'single';
+      // Hide (not remove) each row's own "Assign to" field in single-employee
+      // mode. A hidden field is skipped by the browser's required-field
+      // check, so the form still submits; the bulk select below fills every
+      // row's value via the change handler just below this one. Switching
+      // back to "Divide between employees" just reveals the per-row fields
+      // again with whatever values are already there, so nothing is lost.
+      form.querySelectorAll('.vtp-assignment-assignee-field').forEach(field => { field.hidden = mode === 'single'; });
       return;
     }
 
@@ -1532,6 +1556,14 @@
   });
 
   document.addEventListener('change', event => {
+    const bulkAssignee = event.target.closest('[data-bulk-assignee]');
+    if (!bulkAssignee) return;
+    const form = bulkAssignee.closest('#vtp-quote-project-form') || document.getElementById('vtp-quote-project-form');
+    if (!form) return;
+    form.querySelectorAll('.vtp-assignment-row select[name="assignmentAssignee"]').forEach(select => { select.value = bulkAssignee.value; });
+  });
+
+  document.addEventListener('change', event => {
     const announcementFilter = event.target.closest?.('[data-ann-filter]');
     if (announcementFilter) { state.announcementFilters[announcementFilter.dataset.annFilter] = announcementFilter.value; if (window.VTPAnnouncementRender) window.VTPAnnouncementRender(); return; }
     const field = event.target.closest?.('[name="contractType"], [name="contractMonths"], [name="contractStart"]');
@@ -1672,6 +1704,15 @@
         location.hash = '#quotations'; await route();
       }
       if (formId === 'vtp-quote-project-form') {
+        const bulkAssignee = form.querySelector('[data-bulk-assignee]');
+        const singleMode = !form.querySelector('#vtp-quote-bulk-assign')?.hidden;
+        if (singleMode) {
+          if (!bulkAssignee?.value) { toast('Choose the employee to send every service to.', true); return; }
+          // Re-sync defensively in case a row was added after the last
+          // change event, so every assignment reflects the chosen employee
+          // even if a row's own (hidden) select never fired a change.
+          form.querySelectorAll('.vtp-assignment-row select[name="assignmentAssignee"]').forEach(select => { select.value = bulkAssignee.value; });
+        }
         const assignments = [...form.querySelectorAll('.vtp-assignment-row')].map(row => ({
           itemIndex: Number(row.dataset.itemIndex),
           assigneeId: Number(row.querySelector('[name="assignmentAssignee"]')?.value || 0),
@@ -1680,7 +1721,9 @@
         }));
         const result = await api(`quotations/${data.quotationId}/project`, { method: 'POST', body: JSON.stringify({ ...data, assignments }) });
         state.quotations = []; state.projects = []; state.tasks = []; closeDrawer();
-        toast(`Project created with ${Number(result.taskCount || assignments.length)} separately assigned service tasks.`);
+        toast(singleMode
+          ? `Project created with ${Number(result.taskCount || assignments.length)} tasks assigned to one employee.`
+          : `Project created with ${Number(result.taskCount || assignments.length)} separately assigned service tasks.`);
         location.hash = '#tasks'; await route();
       }
       if (formId === 'vtp-project-review-form') {

@@ -1218,7 +1218,9 @@
 
     const quoteMode = event.target.closest('[data-quote-mode]');
     if (quoteMode) {
-      const form = quoteMode.closest('#vtp-quotation-form');
+      // The mode-toggle buttons sit above <form id="vtp-quotation-form">
+      // (not inside it), so look the form up by id rather than ancestry.
+      const form = document.getElementById('vtp-quotation-form');
       if (!form) return;
       const mode = quoteMode.dataset.quoteMode;
       form.querySelectorAll('[data-quote-mode]').forEach(button => {

@@ -121,6 +121,8 @@
 .vtp-drive-row{display:grid;grid-template-columns:minmax(105px,.42fr) minmax(0,1fr) auto;gap:8px;align-items:center}
 .vtp-drive-row:first-child{grid-template-columns:minmax(105px,.42fr) minmax(0,1fr)}
 .vtp-drive-actions{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:8px}
+.vtp-duration-input{display:grid;grid-template-columns:minmax(0,1fr) minmax(90px,.5fr);gap:8px}
+.vtp-task-ontime{margin:6px 0}
 .vtp-drive-actions a{color:#60338d;font-size:12px;font-weight:800;text-decoration:none}
 .vtp-drive-remove{width:34px;height:34px;border:1px solid #eadde9;border-radius:9px;background:#fff6f4;color:#b4534b;font-size:20px;line-height:1}
 .vtp-task-foot{justify-content:flex-end}

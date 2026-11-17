@@ -245,10 +245,10 @@ JS;
 
     public static function enqueue(): void {
         if (!is_page('team-portal') || !is_user_logged_in()) return;
-        $asset_version = '0.5.47-router-unify';
+        $asset_version = '0.5.48-vtp-dep-fix';
         add_filter('script_loader_src', static fn($src, $handle) => $handle === 'vtp-app' ? add_query_arg('vpm', 'routerunify1', $src) : $src, 10, 2);
         wp_enqueue_style('vpm-modules', VPM_URL . 'assets/modules.css', [], $asset_version);
-        wp_enqueue_script('vpm-modules', VPM_URL . 'assets/modules.js', [], $asset_version, true);
+        wp_enqueue_script('vpm-modules', VPM_URL . 'assets/modules.js', ['vtp-app'], $asset_version, true);
         wp_localize_script('vpm-modules', 'VPM', [
             'root' => esc_url_raw(rest_url('vibes/v1/')),
             'nonce' => wp_create_nonce('wp_rest'),

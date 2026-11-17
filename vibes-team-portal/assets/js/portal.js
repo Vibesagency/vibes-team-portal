@@ -803,8 +803,20 @@
       ${task.description ? `<p class="vtp-task-description">${esc(task.description)}</p>` : ''}
       ${task.submission_note ? `<div class="vtp-task-submission"><strong>Submitted work</strong><p>${esc(task.submission_note)}</p></div>` : ''}
       ${files.length ? `<div class="vtp-task-files">${files.map(file => `<a href="${esc(file.url)}" target="_blank" rel="noopener noreferrer">${file.source === 'google_drive' ? '↗' : '📎'} ${esc(file.name)}</a>`).join('')}</div>` : ''}
-      <div class="vtp-task-foot">${action}${canManage ? ` <button class="vtp-btn small danger" data-delete-task="${task.id}">Delete</button>` : ''}</div>
+      <div class="vtp-task-foot">${action}<button class="vtp-btn small" data-open-task-comments="${task.id}">💬 Comments${task.comment_count ? ` (${Number(task.comment_count)})` : ''}</button>${canManage ? ` <button class="vtp-btn small danger" data-delete-task="${task.id}">Delete</button>` : ''}</div>
     </article>`;
+  }
+
+  async function taskCommentsDrawer(task) {
+    openDrawer(`<h2>Task comments</h2><p>${esc(task.task_number || '')} · ${esc(task.title)}</p><div id="vtp-task-comment-list" class="vtp-task-comment-list">${empty('Loading comments…')}</div><form id="vtp-task-comment-form" class="vtp-form" data-task-id="${task.id}"><div class="vtp-field"><label>Add a comment</label><textarea name="comment" rows="3" placeholder="Write an update or question about this task…" required></textarea></div><button class="vtp-btn primary">Post comment</button></form>`);
+    await refreshTaskComments(task.id);
+  }
+
+  async function refreshTaskComments(taskId) {
+    const list = document.querySelector('#vtp-task-comment-list');
+    if (!list) return;
+    const rows = await api(`tasks/${taskId}/comments`);
+    list.innerHTML = rows.length ? rows.map(item => `<div class="vtp-task-comment"><div class="vtp-task-comment-head"><strong>${esc(item.author_name || 'Team member')}</strong><small>${fmtDateTime(item.created_at)}</small></div><p>${esc(item.comment)}</p></div>`).join('') : empty('No comments yet. Start the discussion below.');
   }
 
   function holidayList() {
@@ -1456,6 +1468,13 @@
       return;
     }
 
+    const openTaskComments = event.target.closest('[data-open-task-comments]');
+    if (openTaskComments) {
+      const row = state.tasks.find(item => Number(item.id) === Number(openTaskComments.dataset.openTaskComments));
+      if (row) taskCommentsDrawer(row);
+      return;
+    }
+
     const task = event.target.closest('[data-task]');
     if (task) {
       try {
@@ -1782,6 +1801,15 @@
         toast(result.projectReady ? 'Work submitted. All project tasks are in, so the project is ready for client review.' : 'Work submitted and the administrator was notified.');
         location.hash = '#tasks';
         await route();
+      }
+      if (formId === 'vtp-task-comment-form') {
+        const taskId = form.dataset.taskId;
+        await api(`tasks/${taskId}/comments`, { method: 'POST', body: JSON.stringify({ comment: data.comment }) });
+        form.reset();
+        state.tasks = [];
+        await refreshTaskComments(taskId);
+        toast('Comment posted.');
+        return;
       }
       if (formId === 'vtp-project-form') {
         await api('projects', { method: 'POST', body: JSON.stringify(data) });

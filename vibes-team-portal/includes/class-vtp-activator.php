@@ -198,6 +198,14 @@ class VTP_Activator {
                 created_at datetime NOT NULL,
                 PRIMARY KEY (id), KEY user_id (user_id), KEY is_read (is_read)
             ) {$charset};",
+            "CREATE TABLE {$prefix}task_comments (
+                id bigint unsigned NOT NULL AUTO_INCREMENT,
+                task_id bigint unsigned NOT NULL,
+                user_id bigint unsigned NOT NULL,
+                comment longtext NOT NULL,
+                created_at datetime NOT NULL,
+                PRIMARY KEY (id), KEY task_id (task_id)
+            ) {$charset};",
             "CREATE TABLE {$prefix}inquiries (
                 id bigint unsigned NOT NULL AUTO_INCREMENT,
                 request_number varchar(80) NOT NULL,

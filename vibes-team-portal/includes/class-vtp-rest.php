@@ -155,6 +155,10 @@ class VTP_REST {
             'methods' => 'DELETE', 'callback' => [self::class, 'delete_task'],
             'permission_callback' => [self::class, 'manage_tasks'],
         ]);
+        register_rest_route(self::NS, '/tasks/(?P<id>\d+)/comments', [
+            ['methods' => 'GET', 'callback' => [self::class, 'task_comments'], 'permission_callback' => [self::class, 'logged_in']],
+            ['methods' => 'POST', 'callback' => [self::class, 'create_task_comment'], 'permission_callback' => [self::class, 'logged_in']],
+        ]);
         register_rest_route(self::NS, '/leave', [
             ['methods' => 'GET', 'callback' => [self::class, 'leave'], 'permission_callback' => [self::class, 'logged_in']],
             ['methods' => 'POST', 'callback' => [self::class, 'create_leave'], 'permission_callback' => [self::class, 'logged_in']],
@@ -1573,7 +1577,7 @@ class VTP_REST {
     public static function tasks(): WP_REST_Response {
         global $wpdb;
         $where = current_user_can('vtp_manage_tasks') ? '1=1' : $wpdb->prepare('t.assignee_id=%d', get_current_user_id());
-        $sql = 'SELECT t.*, p.name project_name, u.display_name assignee_name, u.user_email assignee_email FROM ' . self::table('tasks') . ' t LEFT JOIN ' . self::table('projects') . ' p ON p.id=t.project_id LEFT JOIN ' . $wpdb->users . " u ON u.ID=t.assignee_id WHERE {$where} ORDER BY FIELD(t.status,'in_progress','todo','review','done'), t.due_date ASC";
+        $sql = 'SELECT t.*, p.name project_name, u.display_name assignee_name, u.user_email assignee_email, (SELECT COUNT(*) FROM ' . self::table('task_comments') . ' c WHERE c.task_id=t.id) comment_count FROM ' . self::table('tasks') . ' t LEFT JOIN ' . self::table('projects') . ' p ON p.id=t.project_id LEFT JOIN ' . $wpdb->users . " u ON u.ID=t.assignee_id WHERE {$where} ORDER BY FIELD(t.status,'in_progress','todo','review','done'), t.due_date ASC";
         $rows = $wpdb->get_results($sql, ARRAY_A);
         foreach ($rows as &$row) {
             $row['files'] = !empty($row['files_json']) ? (json_decode($row['files_json'], true) ?: []) : [];
@@ -1671,6 +1675,51 @@ class VTP_REST {
         self::notify_admins('task_submitted', $user->display_name . ' submitted work for review', $task->task_number . ' · ' . $task->title, 'task', $id);
         $project_state = self::refresh_project_status((int) $task->project_id);
         return rest_ensure_response(['submitted' => true, 'invoiceCreated' => false, 'projectReady' => $project_state['ready']]);
+    }
+
+    private static function task_access(int $task_id) {
+        global $wpdb;
+        $task = $wpdb->get_row($wpdb->prepare('SELECT * FROM ' . self::table('tasks') . ' WHERE id=%d', $task_id));
+        if (!$task) return new WP_Error('not_found', 'Task not found.', ['status' => 404]);
+        if (!current_user_can('vtp_manage_tasks') && (int) $task->assignee_id !== get_current_user_id()) {
+            return new WP_Error('forbidden', 'You cannot access this task.', ['status' => 403]);
+        }
+        return $task;
+    }
+
+    public static function task_comments(WP_REST_Request $request) {
+        global $wpdb;
+        $id = (int) $request['id'];
+        $task = self::task_access($id);
+        if (is_wp_error($task)) return $task;
+        $rows = $wpdb->get_results($wpdb->prepare(
+            'SELECT c.*, u.display_name AS author_name FROM ' . self::table('task_comments') . ' c LEFT JOIN ' . $wpdb->users . ' u ON u.ID=c.user_id WHERE c.task_id=%d ORDER BY c.created_at ASC',
+            $id
+        ), ARRAY_A);
+        return rest_ensure_response($rows);
+    }
+
+    public static function create_task_comment(WP_REST_Request $request) {
+        global $wpdb;
+        $id = (int) $request['id'];
+        $task = self::task_access($id);
+        if (is_wp_error($task)) return $task;
+        $comment = sanitize_textarea_field($request['comment']);
+        if (!$comment) return new WP_Error('missing_comment', 'Write a comment before posting.', ['status' => 400]);
+        $now = current_time('mysql');
+        $user = wp_get_current_user();
+        $wpdb->insert(self::table('task_comments'), [
+            'task_id' => $id, 'user_id' => $user->ID, 'comment' => $comment, 'created_at' => $now,
+        ]);
+        if (current_user_can('vtp_manage_tasks')) {
+            $wpdb->insert(self::table('notifications'), [
+                'user_id' => (int) $task->assignee_id, 'type' => 'task_comment', 'title' => 'New comment on your task',
+                'body' => $task->title, 'object_type' => 'task', 'object_id' => $id, 'created_at' => $now,
+            ]);
+        } else {
+            self::notify_admins('task_comment', $user->display_name . ' commented on a task', $task->task_number . ' · ' . $task->title, 'task', $id);
+        }
+        return new WP_REST_Response(['id' => (int) $wpdb->insert_id], 201);
     }
 
     private static function refresh_project_status(int $project_id): array {

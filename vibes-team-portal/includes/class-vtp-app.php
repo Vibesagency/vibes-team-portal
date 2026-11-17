@@ -12,6 +12,10 @@ class VTP_App {
         add_shortcode('vtp_project_review', [self::class, 'project_review']);
         add_action('wp_enqueue_scripts', [self::class, 'assets']);
         add_action('template_redirect', [self::class, 'guard']);
+        // Serve the service worker from the site root so its default scope
+        // ("/") covers /team-portal/ — a copy under the plugin's own assets
+        // path would only ever be allowed to control that subfolder.
+        add_action('init', [self::class, 'maybe_serve_service_worker']);
         add_filter('wp_robots', [self::class, 'noindex']);
         add_filter('show_admin_bar', [self::class, 'admin_bar']);
         // Don't let visitors who aren't signed in list account names.
@@ -32,6 +36,18 @@ class VTP_App {
         add_filter('login_headerurl', static fn() => home_url('/'));
         add_filter('login_headertext', static fn() => 'Vibes Agency');
         add_filter('login_title', static fn($title) => str_replace(['WordPress', '—'], ['Vibes Team', '·'], (string) $title));
+    }
+
+    public static function maybe_serve_service_worker(): void {
+        $path = parse_url($_SERVER['REQUEST_URI'] ?? '', PHP_URL_PATH);
+        if ($path !== '/sw.js') return;
+        $file = VTP_DIR . 'assets/js/sw.js';
+        if (!file_exists($file)) { status_header(404); exit; }
+        header('Content-Type: application/javascript; charset=UTF-8');
+        header('Service-Worker-Allowed: /');
+        header('Cache-Control: no-cache');
+        echo file_get_contents($file); // phpcs:ignore WordPress.WP.AlternativeFunctions
+        exit;
     }
 
     public static function favicon(): void {
@@ -89,10 +105,22 @@ body.login .language-switcher{display:none}
             <meta charset="<?php bloginfo('charset'); ?>">
             <meta name="viewport" content="width=device-width, initial-scale=1">
             <title><?php echo esc_html(is_page('team-login') ? 'Vibes Team Login' : (is_page('quotation-review') ? 'Review Vibes Quotation' : (is_page('project-review') ? 'Review Vibes Project' : 'Vibes Team Portal'))); ?></title>
+            <?php if (is_page(['team-login', 'team-portal'])) : ?>
+            <link rel="manifest" href="<?php echo esc_url(VTP_URL . 'assets/images/manifest.json'); ?>">
+            <meta name="theme-color" content="#5d1ee5">
+            <link rel="apple-touch-icon" href="<?php echo esc_url(VTP_URL . 'assets/images/apple-touch-icon.png'); ?>">
+            <meta name="apple-mobile-web-app-capable" content="yes">
+            <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+            <meta name="apple-mobile-web-app-title" content="Vibes Portal">
+            <meta name="mobile-web-app-capable" content="yes">
+            <?php endif; ?>
             <?php wp_head(); ?>
         </head>
         <body class="vtp-standalone">
             <?php echo $content; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped ?>
+            <?php if (is_page(['team-login', 'team-portal'])) : ?>
+            <script>if ('serviceWorker' in navigator) { window.addEventListener('load', () => navigator.serviceWorker.register('/sw.js').catch(() => {})); }</script>
+            <?php endif; ?>
             <?php wp_footer(); ?>
         </body>
         </html><?php

@@ -213,7 +213,8 @@
       } catch (error) { /* Keep the launcher quiet if the optional unread check is unavailable. */ }
       scheduleUnreadCheck();
     };
-    VTPR.onHashChange(() => { if (routeIsConnect()) updateUnreadBell(0); });
+    if (window.VTPR) window.VTPR.onHashChange(() => { if (routeIsConnect()) updateUnreadBell(0); });
+    else window.addEventListener('hashchange', () => { if (routeIsConnect()) updateUnreadBell(0); });
     window.addEventListener('vpm-connect-unread', event => updateUnreadBell(event.detail && event.detail.count));
     window.setTimeout(checkUnread, 1800);
     document.body.appendChild(launcher);
@@ -2080,12 +2081,16 @@
     addNavLink();
     if (location.hash.split('?')[0] === '#payslips' && !document.querySelector('.vtp-payslips-page')) window.setTimeout(page, 80);
   };
-  VTPR.onHashChange(watch);
+  if (window.VTPR) {
+    window.VTPR.onHashChange(watch);
+    const nav = document.querySelector('#vtp-nav');
+    if (nav) window.VTPR.watch(addNavLink);
+    const view = document.querySelector('#vtp-view');
+    if (view) window.VTPR.watch(() => { if (location.hash.split('?')[0] === '#payslips' && !view.querySelector('.vtp-payslips-page')) window.setTimeout(page, 60); });
+  } else {
+    window.addEventListener('hashchange', watch);
+  }
   [300, 1000, 2000, 4000].forEach(delay => window.setTimeout(watch, delay));
-  const nav = document.querySelector('#vtp-nav');
-  if (nav) VTPR.watch(addNavLink);
-  const view = document.querySelector('#vtp-view');
-  if (view) VTPR.watch(() => { if (location.hash.split('?')[0] === '#payslips' && !view.querySelector('.vtp-payslips-page')) window.setTimeout(page, 60); });
 })();
 
 
@@ -2292,8 +2297,8 @@
   };
   let timer;
   const schedule = () => { clearTimeout(timer); timer = setTimeout(enhance, 160); };
-  VTPR.watch(schedule);
-  VTPR.onHashChange(schedule);
+  if (window.VTPR) { window.VTPR.watch(schedule); window.VTPR.onHashChange(schedule); }
+  else window.addEventListener('hashchange', schedule);
   setTimeout(enhance, 500);
 })();
 
@@ -2357,11 +2362,11 @@
   };
   let timer;
   const schedule = () => { clearTimeout(timer); timer = setTimeout(enhance, 120); };
-  VTPR.watch(schedule);
+  if (window.VTPR) { window.VTPR.watch(schedule); window.VTPR.onHashChange(schedule); }
+  else window.addEventListener('hashchange', schedule);
   document.addEventListener('change', event => {
     if (event.target.matches('[name="hrEmploymentStatus"],[name="role"]')) schedule();
   });
-  VTPR.onHashChange(schedule);
   setTimeout(enhance, 650);
 })();
 
@@ -2414,8 +2419,12 @@
     catch (error) { button.disabled = false; button.textContent = cancel ? 'Cancel request' : 'Delete & restore'; window.alert(error.message || 'Unable to update leave.'); }
   }, true);
   const root = document.querySelector('#vtp-view');
-  if (root) VTPR.watch(() => setTimeout(enhanceLeave, 80));
-  VTPR.onHashChange(() => setTimeout(enhanceLeave, 150));
+  if (window.VTPR) {
+    if (root) window.VTPR.watch(() => setTimeout(enhanceLeave, 80));
+    window.VTPR.onHashChange(() => setTimeout(enhanceLeave, 150));
+  } else {
+    window.addEventListener('hashchange', () => setTimeout(enhanceLeave, 150));
+  }
   setTimeout(enhanceLeave, 500);
 })();
 
@@ -2484,6 +2493,6 @@
     }
   };
   const scan = () => document.querySelectorAll('[data-mapped-path-status][data-folder]:not([data-done])').forEach(fill);
-  const start = () => { scan(); VTPR.watch(scan); };
+  const start = () => { scan(); if (window.VTPR) window.VTPR.watch(scan); else window.addEventListener('hashchange', scan); };
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start); else start();
 })();

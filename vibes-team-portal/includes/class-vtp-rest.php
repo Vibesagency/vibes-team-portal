@@ -1589,7 +1589,12 @@ class VTP_REST {
         $client_name = sanitize_text_field($request['clientName']);
         $assignee = (int) $request['assigneeId'];
         if (!$title || !$task_number || !$client_name || !$assignee || !get_user_by('id', $assignee)) return new WP_Error('missing_fields', 'Task number, client name, title and assignee are required.', ['status' => 400]);
+        $duration_unit = in_array($request['durationUnit'], ['hours', 'days'], true) ? $request['durationUnit'] : 'days';
+        $duration_value = is_numeric($request['durationValue']) ? (float) $request['durationValue'] : 0;
+        if ($duration_value <= 0) return new WP_Error('missing_duration', 'Add an estimated duration to complete this task.', ['status' => 400]);
+        $duration_hours = $duration_unit === 'hours' ? $duration_value : $duration_value * 24;
         $now = current_time('mysql');
+        $due_date = date('Y-m-d', strtotime($now . " +{$duration_hours} hours"));
         $files = self::task_drive_links($request);
         if (is_wp_error($files)) return $files;
         $wpdb->insert(self::table('tasks'), [
@@ -1600,7 +1605,8 @@ class VTP_REST {
             'description' => sanitize_textarea_field($request['description']), 'assignee_id' => $assignee,
             'files_json' => wp_json_encode($files),
             'created_by' => get_current_user_id(), 'priority' => in_array($request['priority'], ['low','medium','high'], true) ? $request['priority'] : 'medium',
-            'status' => 'todo', 'due_date' => sanitize_text_field($request['dueDate']) ?: null,
+            'status' => 'todo', 'due_date' => $due_date,
+            'duration_value' => $duration_value, 'duration_unit' => $duration_unit,
             'created_at' => $now, 'updated_at' => $now,
         ]);
         $task_id = (int) $wpdb->insert_id;

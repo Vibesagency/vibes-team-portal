@@ -127,6 +127,8 @@ class VTP_Activator {
                 priority varchar(20) NOT NULL DEFAULT 'medium',
                 status varchar(30) NOT NULL DEFAULT 'todo',
                 due_date date DEFAULT NULL,
+                duration_value decimal(6,2) DEFAULT NULL,
+                duration_unit varchar(10) NOT NULL DEFAULT 'days',
                 delivery_month varchar(7) DEFAULT '',
                 submitted_at datetime DEFAULT NULL,
                 submission_note longtext,

@@ -243,6 +243,8 @@ class VTP_Activator {
                 period_start date DEFAULT NULL,
                 period_end date DEFAULT NULL,
                 template_key varchar(30) NOT NULL DEFAULT 'one_time',
+                source_type varchar(20) NOT NULL DEFAULT 'form',
+                source_file_url varchar(500) DEFAULT '',
                 approval_token varchar(64) DEFAULT '',
                 sent_at datetime DEFAULT NULL,
                 client_action_at datetime DEFAULT NULL,

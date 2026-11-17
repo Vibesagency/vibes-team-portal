@@ -107,6 +107,10 @@ class VTP_REST {
             ['methods' => 'GET', 'callback' => [self::class, 'quotations'], 'permission_callback' => [self::class, 'manage_sales']],
             ['methods' => 'POST', 'callback' => [self::class, 'create_quotation'], 'permission_callback' => [self::class, 'manage_sales']],
         ]);
+        register_rest_route(self::NS, '/quotations/source-upload', [
+            'methods' => 'POST', 'callback' => [self::class, 'upload_quotation_source'],
+            'permission_callback' => [self::class, 'manage_sales'],
+        ]);
         register_rest_route(self::NS, '/quotations/(?P<id>\d+)/status', [
             'methods' => 'PATCH', 'callback' => [self::class, 'quotation_status'],
             'permission_callback' => [self::class, 'manage_sales'],
@@ -581,6 +585,8 @@ class VTP_REST {
         $discounted_subtotal = round($subtotal - $discount_amount, 2);
         $vat_amount = round($discounted_subtotal * ($vat_rate / 100), 2);
         $template_key = $contract_months === 12 ? 'one_year' : ($contract_months === 6 ? 'six_months' : 'one_time');
+        $source_type = in_array((string) ($request['sourceType'] ?? 'form'), ['form', 'pdf_upload'], true) ? (string) $request['sourceType'] : 'form';
+        $source_file_url = $source_type === 'pdf_upload' ? esc_url_raw((string) ($request['sourceFileUrl'] ?? ''), ['https']) : '';
         $token = bin2hex(random_bytes(32));
         $now = current_time('mysql');
         $quote_number = self::reference('VQ', 'quotations', 'quote_number');
@@ -612,6 +618,8 @@ class VTP_REST {
             'period_start' => null,
             'period_end' => null,
             'template_key' => $template_key,
+            'source_type' => $source_type,
+            'source_file_url' => $source_file_url,
             'approval_token' => $token,
             'created_by' => get_current_user_id(),
             'created_at' => $now,
@@ -2216,6 +2224,21 @@ class VTP_REST {
         }
         update_option('vtp_files_brand', $data, false);
         return rest_ensure_response(self::files_brand_response());
+    }
+
+    public static function upload_quotation_source(WP_REST_Request $request) {
+        if (empty($_FILES['file']) || !is_array($_FILES['file'])) return new WP_Error('missing_pdf', 'Choose a PDF to upload.', ['status' => 400]);
+        $file = $_FILES['file'];
+        if (!empty($file['size']) && (int) $file['size'] > 25 * MB_IN_BYTES) return new WP_Error('pdf_too_large', 'Use a PDF smaller than 25 MB.', ['status' => 400]);
+        $checked = wp_check_filetype_and_ext($file['tmp_name'], $file['name']);
+        if (empty($checked['type']) || $checked['type'] !== 'application/pdf') return new WP_Error('invalid_pdf', 'Use a PDF file.', ['status' => 400]);
+        require_once ABSPATH . 'wp-admin/includes/file.php';
+        require_once ABSPATH . 'wp-admin/includes/media.php';
+        require_once ABSPATH . 'wp-admin/includes/image.php';
+        $attachment_id = media_handle_upload('file', 0, [], ['test_form' => false]);
+        if (is_wp_error($attachment_id)) return $attachment_id;
+        $url = wp_get_attachment_url($attachment_id);
+        return rest_ensure_response(['url' => esc_url_raw((string) $url)]);
     }
 
     public static function upload_files_brand(WP_REST_Request $request) {

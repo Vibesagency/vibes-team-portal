@@ -858,6 +858,78 @@
     openDrawer(`<div class="vtp-card-head"><div><span class="vtp-eyebrow">${esc(item.request_number)}</span><h2>${esc(item.company || item.client_name)}</h2></div>${chip(item.status, item.status === 'approved' ? 'green' : 'amber')}</div><div class="vtp-list"><div class="vtp-list-row"><span>Client</span><strong>${esc(item.client_name)}</strong></div><div class="vtp-list-row"><span>Email</span><strong>${esc(item.email)}</strong></div><div class="vtp-list-row"><span>Phone</span><strong>${esc(item.phone || '—')}</strong></div><div class="vtp-list-row"><span>Source</span><strong>${esc(item.source)}</strong></div><div class="vtp-list-row"><span>Deadline</span><strong>${fmt(item.deadline)}</strong></div></div><h3>Requested services</h3><div class="vtp-tag-list">${(item.services || []).map(service => chip(service)).join('') || 'Custom request'}</div><h3>Project brief</h3><div class="vtp-brief-box">${esc(item.brief || 'No brief provided.')}</div><button class="vtp-btn primary" data-quote-inquiry="${item.id}">Create quotation</button>`);
   }
 
+  // Lazily loads pdf.js (only needed when an admin chooses "Upload PDF
+  // quotation"), so most visits to the drawer never pay for it.
+  let pdfJsPromise = null;
+  function ensurePdfJs() {
+    if (window.pdfjsLib) return Promise.resolve(window.pdfjsLib);
+    if (pdfJsPromise) return pdfJsPromise;
+    pdfJsPromise = new Promise((resolve, reject) => {
+      const script = document.createElement('script');
+      script.src = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js';
+      script.onload = () => {
+        if (!window.pdfjsLib) { reject(new Error('PDF reader failed to load.')); return; }
+        window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+        resolve(window.pdfjsLib);
+      };
+      script.onerror = () => reject(new Error('PDF reader could not be loaded. Check your connection and try again.'));
+      document.head.appendChild(script);
+    });
+    return pdfJsPromise;
+  }
+
+  // Reads the raw text layer of every page of a PDF. Illustrator exports
+  // that are pure vector artwork (text converted to outlines) have no text
+  // layer at all, in which case this returns an empty string and the admin
+  // is told to fill in the services and total manually.
+  async function extractPdfText(file) {
+    const pdfjsLib = await ensurePdfJs();
+    const buffer = await file.arrayBuffer();
+    const pdf = await pdfjsLib.getDocument({ data: buffer }).promise;
+    let text = '';
+    for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber++) {
+      const page = await pdf.getPage(pageNumber);
+      const content = await page.getTextContent();
+      text += content.items.map(item => item.str).join(' ') + '\n';
+    }
+    return text;
+  }
+
+  // Best-effort heuristic parse of a quotation/invoice-style PDF's text into
+  // candidate service rows and a total. This is intentionally approximate —
+  // the admin reviews and edits every row before the quotation is saved, so
+  // a missed or misread line never reaches a client or Finance unseen.
+  function parseQuotationPdfText(rawText) {
+    const text = String(rawText || '').replace(/\r/g, '');
+    const numberToken = '[\\d,]+(?:\\.\\d{1,2})?';
+    const toNumber = token => Number(String(token).replace(/,/g, ''));
+
+    // Total: prefer the last explicit "grand total" / "total due" / "total"
+    // line in the document (totals are almost always near the bottom).
+    const totalRegex = new RegExp(`(grand\\s*total|total\\s*due|total\\s*amount|total)\\s*[:\\-]?\\s*(?:SAR|SR|USD|AED|\\$|ر\\.س)?\\s*(${numberToken})`, 'gi');
+    let total = 0;
+    let totalMatch;
+    while ((totalMatch = totalRegex.exec(text)) !== null) total = toNumber(totalMatch[2]);
+
+    // Line items: lines of reasonable length ending in a currency-like
+    // number, skipping obvious non-service lines (totals, tax, headers).
+    const skipWords = /\b(sub ?total|vat|tax|total|grand total|page \d|quotation|invoice|date|valid until|client|prepared by|prepared for)\b/i;
+    const lineRegex = new RegExp(`^(.{3,90}?)\\s+(?:SAR|SR|USD|AED|\\$|ر\\.س)?\\s*(${numberToken})\\s*(?:SAR|SR|USD|AED|ر\\.س)?$`, 'i');
+    const items = [];
+    for (const rawLine of text.split('\n')) {
+      const line = rawLine.replace(/\s+/g, ' ').trim();
+      if (!line || skipWords.test(line)) continue;
+      const match = line.match(lineRegex);
+      if (!match) continue;
+      const description = match[1].replace(/[-•.\s]+$/, '').trim();
+      const price = toNumber(match[2]);
+      if (!description || description.length < 3 || !(price > 0)) continue;
+      items.push({ description, quantity: 1, unitPrice: price });
+      if (items.length >= 25) break;
+    }
+    return { items, total };
+  }
+
   async function quotationDrawerLegacy(inquiryId = 0) {
     const inquiries = await load('inquiries', true);
     const inquiry = inquiries.find(item => Number(item.id) === Number(inquiryId));
@@ -883,7 +955,8 @@
     const contractNotice = contractLabel ? `<div class="vtp-alert"><strong>Contract term detected: ${esc(contractLabel)}${contractRate ? ` · ${contractRate}% discount` : ''}.</strong> The service prices below already include the full contract duration and applicable discount.</div>` : '';
     const defaultTerms = contractLabel ? `Contract term: ${contractLabel}${contractRate ? ` with a ${contractRate}% contract discount included in the listed prices.` : '.'} Work begins after written approval. Payment is due monthly upon submission of each month's completed services. Additional scope may require a revised quotation.` : 'Work begins after written approval. Payment is due after final delivery according to the agreed payment term. Additional scope may require a revised quotation.';
     const itemRow = (item, index) => `<div class="vtp-quote-item"><input type="hidden" name="itemTerm" value="${esc(item.term || 'once')}"><input type="hidden" name="itemDurationMonths" value="${Number(item.durationMonths || 0)}"><input type="hidden" name="itemDurationDiscount" value="${Number(item.durationDiscount ?? item.annualDiscount ?? 0)}"><input type="hidden" name="itemAnnualDiscount" value="${Number(item.annualDiscount ?? item.durationDiscount ?? 0)}"><input type="hidden" name="itemPackageName" value="${esc(item.packageName || '')}"><input name="itemLabel" value="${esc(item.label || '')}" placeholder="Label" aria-label="Service label"><input name="itemDescription" value="${esc(item.name || item.description || '')}" placeholder="Service or deliverable" required><input name="itemQuantity" type="number" min="0.01" step="0.01" value="${Number(item.quantity || 1)}" aria-label="Quantity"><input name="itemPrice" type="number" min="0" step="0.01" value="${Number(item.unitPrice || 0)}" placeholder="Unit price" aria-label="Unit price" required>${index ? '<button type="button" class="vtp-drive-remove" data-remove-quote-item aria-label="Remove item">×</button>' : ''}</div>`;
-    openDrawer(`<h2>Create quotation</h2><p>Review the requested quantities, service labels and prices before sending the secure approval link.</p>${contractNotice}<form id="vtp-quotation-form" class="vtp-form"><input type="hidden" name="inquiryId" value="${inquiry?.id || ''}"><div class="vtp-form-row"><div class="vtp-field"><label>Client name</label><input name="clientName" value="${esc(inquiry?.client_name || '')}" required></div><div class="vtp-field"><label>Company</label><input name="company" value="${esc(inquiry?.company || '')}"></div></div><div class="vtp-form-row"><div class="vtp-field"><label>Email</label><input name="email" type="email" value="${esc(inquiry?.email || '')}" required></div><div class="vtp-field"><label>Phone</label><input name="phone" value="${esc(inquiry?.phone || '')}"></div></div><div class="vtp-form-row"><div class="vtp-field"><label>Currency</label><select name="currency"><option value="SAR" ${currency === 'SAR' ? 'selected' : ''}>SAR</option><option value="USD" ${currency === 'USD' ? 'selected' : ''}>USD</option></select></div><div class="vtp-field"><label>Valid until</label><input name="validUntil" type="date" value="${validUntil}" required></div></div><div class="vtp-field"><div class="vtp-card-head"><label>Contract and billing cycle</label><span class="vtp-admin-note">Long-term quotes create one master plus monthly drafts.</span></div><div class="vtp-form-row"><div class="vtp-field"><label>Quotation type</label><select name="contractType"><option value="one_time" ${detectedType === 'one_time' ? 'selected' : ''}>One-time quotation</option><option value="long_term" ${detectedType === 'long_term' ? 'selected' : ''}>Long-term monthly quotation</option></select></div><div class="vtp-field"><label>Number of months</label><input name="contractMonths" type="number" min="1" max="60" value="${detectedMonths}" required></div></div><div class="vtp-form-row"><div class="vtp-field"><label>Contract start date</label><input name="contractStart" type="date" value="${defaultContractStart}"></div><div class="vtp-field"><label>Contract end date</label><input name="contractEnd" type="date" readonly><small>Calculated automatically from the start date and number of months.</small></div></div></div><div class="vtp-field"><div class="vtp-card-head"><label>Services and pricing</label><button type="button" class="vtp-btn small" data-add-quote-item>＋ Add item</button></div><div class="vtp-quote-item-head"><span>Label</span><span>Service / deliverable</span><span>Qty</span><span>Unit price</span></div><div id="vtp-quote-items" class="vtp-quote-items">${serviceRows.map(itemRow).join('')}</div></div><div class="vtp-field"><label>VAT rate (%)</label><input name="vatRate" type="number" min="0" max="100" step="0.01" value="15"></div><div class="vtp-field"><label>Terms</label><textarea name="terms" rows="5">${esc(defaultTerms)}</textarea></div><div class="vtp-field"><label>Notes</label><textarea name="notes" rows="3" placeholder="Optional client-facing notes"></textarea></div><button class="vtp-btn primary">Save quotation</button></form>`);
+    const pdfUploadBlock = `<div class="vtp-field" id="vtp-quote-pdf-upload" hidden><label>Quotation PDF</label><input type="file" id="vtp-quote-pdf-file" accept="application/pdf"><small id="vtp-quote-pdf-status">Upload the PDF designed in Illustrator (or another tool). We'll try to read the services and total from it and fill them in below — review and fix them before saving. The PDF is kept attached to this quotation for reference.</small></div>`;
+    openDrawer(`<h2>Create quotation</h2><p>Review the requested quantities, service labels and prices before sending the secure approval link.</p><div class="vtp-quote-mode-toggle" role="tablist"><button type="button" class="vtp-btn small active" data-quote-mode="form" aria-pressed="true">Build from form</button><button type="button" class="vtp-btn small" data-quote-mode="pdf" aria-pressed="false">Upload PDF quotation</button></div>${contractNotice}<form id="vtp-quotation-form" class="vtp-form"><input type="hidden" name="inquiryId" value="${inquiry?.id || ''}"><input type="hidden" name="sourceType" value="form"><input type="hidden" name="sourceFileUrl" value="">${pdfUploadBlock}<div class="vtp-form-row"><div class="vtp-field"><label>Client name</label><input name="clientName" value="${esc(inquiry?.client_name || '')}" required></div><div class="vtp-field"><label>Company</label><input name="company" value="${esc(inquiry?.company || '')}"></div></div><div class="vtp-form-row"><div class="vtp-field"><label>Email</label><input name="email" type="email" value="${esc(inquiry?.email || '')}" required></div><div class="vtp-field"><label>Phone</label><input name="phone" value="${esc(inquiry?.phone || '')}"></div></div><div class="vtp-form-row"><div class="vtp-field"><label>Currency</label><select name="currency"><option value="SAR" ${currency === 'SAR' ? 'selected' : ''}>SAR</option><option value="USD" ${currency === 'USD' ? 'selected' : ''}>USD</option></select></div><div class="vtp-field"><label>Valid until</label><input name="validUntil" type="date" value="${validUntil}" required></div></div><div class="vtp-field"><div class="vtp-card-head"><label>Contract and billing cycle</label><span class="vtp-admin-note">Long-term quotes create one master plus monthly drafts.</span></div><div class="vtp-form-row"><div class="vtp-field"><label>Quotation type</label><select name="contractType"><option value="one_time" ${detectedType === 'one_time' ? 'selected' : ''}>One-time quotation</option><option value="long_term" ${detectedType === 'long_term' ? 'selected' : ''}>Long-term monthly quotation</option></select></div><div class="vtp-field"><label>Number of months</label><input name="contractMonths" type="number" min="1" max="60" value="${detectedMonths}" required></div></div><div class="vtp-form-row"><div class="vtp-field"><label>Contract start date</label><input name="contractStart" type="date" value="${defaultContractStart}"></div><div class="vtp-field"><label>Contract end date</label><input name="contractEnd" type="date" readonly><small>Calculated automatically from the start date and number of months.</small></div></div></div><div class="vtp-field"><div class="vtp-card-head"><label>Services and pricing</label><button type="button" class="vtp-btn small" data-add-quote-item>＋ Add item</button></div><div class="vtp-quote-item-head"><span>Label</span><span>Service / deliverable</span><span>Qty</span><span>Unit price</span></div><div id="vtp-quote-items" class="vtp-quote-items">${serviceRows.map(itemRow).join('')}</div></div><div class="vtp-field"><label>VAT rate (%)</label><input name="vatRate" type="number" min="0" max="100" step="0.01" value="15"></div><div class="vtp-field"><label>Terms</label><textarea name="terms" rows="5">${esc(defaultTerms)}</textarea></div><div class="vtp-field"><label>Notes</label><textarea name="notes" rows="3" placeholder="Optional client-facing notes"></textarea></div><button class="vtp-btn primary">Save quotation</button></form>`);
   }
 
   function quotationPaperLegacy(quote) {
@@ -1143,6 +1216,22 @@
       return;
     }
 
+    const quoteMode = event.target.closest('[data-quote-mode]');
+    if (quoteMode) {
+      const form = quoteMode.closest('#vtp-quotation-form');
+      if (!form) return;
+      const mode = quoteMode.dataset.quoteMode;
+      form.querySelectorAll('[data-quote-mode]').forEach(button => {
+        const active = button === quoteMode;
+        button.classList.toggle('active', active);
+        button.setAttribute('aria-pressed', String(active));
+      });
+      const upload = form.querySelector('#vtp-quote-pdf-upload');
+      if (upload) upload.hidden = mode !== 'pdf';
+      if (form.elements.sourceType) form.elements.sourceType.value = mode === 'pdf' ? 'pdf_upload' : 'form';
+      return;
+    }
+
     const addQuoteItem = event.target.closest('[data-add-quote-item]');
     if (addQuoteItem) {
       $('#vtp-quote-items').insertAdjacentHTML('beforeend', `<div class="vtp-quote-item"><input type="hidden" name="itemTerm" value="once"><input type="hidden" name="itemDurationMonths" value="0"><input type="hidden" name="itemDurationDiscount" value="0"><input type="hidden" name="itemAnnualDiscount" value="0"><input type="hidden" name="itemPackageName" value=""><input name="itemDescription" placeholder="Service or deliverable" required><input name="itemQuantity" type="number" min="0.01" step="0.01" value="1" aria-label="Quantity"><input name="itemPrice" type="number" min="0" step="0.01" placeholder="Unit price" aria-label="Unit price" required><button type="button" class="vtp-drive-remove" data-remove-quote-item aria-label="Remove item">×</button></div>`);
@@ -1344,6 +1433,38 @@
       toast('File uploaded and available to the team.');
       await route();
     } catch (error) { toast(error.message, true); input.disabled = false; }
+  });
+
+  document.addEventListener('change', async event => {
+    const fileInput = event.target.closest('#vtp-quote-pdf-file');
+    if (!fileInput || !fileInput.files?.[0]) return;
+    const file = fileInput.files[0];
+    const form = fileInput.closest('#vtp-quotation-form');
+    const status = form?.querySelector('#vtp-quote-pdf-status');
+    const setStatus = (message, isError = false) => { if (status) { status.textContent = message; status.classList.toggle('vtp-field-error', isError); } };
+    if (!form) return;
+    fileInput.disabled = true;
+    setStatus('Reading the PDF…');
+    try {
+      const upload = new FormData();
+      upload.append('file', file);
+      const uploaded = await api('quotations/source-upload', { method: 'POST', body: upload }).catch(error => { toast(error.message, true); return null; });
+      if (uploaded?.url && form.elements.sourceFileUrl) form.elements.sourceFileUrl.value = uploaded.url;
+
+      const text = await extractPdfText(file).catch(() => '');
+      const { items, total } = parseQuotationPdfText(text);
+      const itemsContainer = form.querySelector('#vtp-quote-items');
+      if (items.length && itemsContainer) {
+        itemsContainer.innerHTML = items.map((item, index) => `<div class="vtp-quote-item"><input type="hidden" name="itemTerm" value="once"><input type="hidden" name="itemDurationMonths" value="0"><input type="hidden" name="itemDurationDiscount" value="0"><input type="hidden" name="itemAnnualDiscount" value="0"><input type="hidden" name="itemPackageName" value=""><input name="itemLabel" placeholder="Label" aria-label="Service label"><input name="itemDescription" value="${esc(item.description)}" placeholder="Service or deliverable" required><input name="itemQuantity" type="number" min="0.01" step="0.01" value="${Number(item.quantity || 1)}" aria-label="Quantity"><input name="itemPrice" type="number" min="0" step="0.01" value="${Number(item.unitPrice || 0)}" placeholder="Unit price" aria-label="Unit price" required>${index ? '<button type="button" class="vtp-drive-remove" data-remove-quote-item aria-label="Remove item">×</button>' : ''}</div>`).join('');
+        setStatus(`Found ${items.length} service${items.length === 1 ? '' : 's'}${total ? ` and a total of ${money(total, form.elements.currency?.value || 'SAR')}` : ''} in the PDF. Review every row below — quantities, prices and wording may need fixing — before saving.`);
+      } else {
+        setStatus("Couldn't read service lines from this PDF automatically (this can happen with outlined/vector artwork). Add the services and prices below yourself — the PDF stays attached to this quotation for reference.", true);
+      }
+    } catch (error) {
+      setStatus('Could not read this PDF. Add the services and prices below yourself — the PDF stays attached to this quotation for reference.', true);
+    } finally {
+      fileInput.disabled = false;
+    }
   });
 
   document.addEventListener('change', event => {

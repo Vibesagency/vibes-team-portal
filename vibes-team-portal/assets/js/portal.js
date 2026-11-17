@@ -2439,16 +2439,19 @@
       if (text && !link.title) { link.title = text; link.setAttribute('aria-label', text); }
     });
     label();
-    VTPR.watch(label);
     const close = () => { app.classList.remove('vtp-nav-open'); if (more) more.setAttribute('aria-expanded', 'false'); };
+    // Wire up the button first: this must not be skipped by a VTPR load-order
+    // race (portal.js can execute before vibes-portal-modules defines VTPR),
+    // which previously left the mobile "Menu" button with no click handler.
     if (more) more.addEventListener('click', () => {
       const open = !app.classList.contains('vtp-nav-open');
       app.classList.toggle('vtp-nav-open', open);
       more.setAttribute('aria-expanded', String(open));
     });
     nav.addEventListener('click', event => { if (event.target.closest('a')) close(); });
-    VTPR.onHashChange(close);
     document.addEventListener('keydown', event => { if (event.key === 'Escape') close(); });
+    if (window.VTPR) { window.VTPR.watch(label); window.VTPR.onHashChange(close); }
+    else { window.addEventListener('hashchange', label); window.addEventListener('hashchange', close); }
   };
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', ready); else ready();
 })();

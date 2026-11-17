@@ -681,7 +681,7 @@ class VTP_REST {
             }
         }
         if ((int) $request['inquiryId']) $wpdb->update(self::table('inquiries'), ['status' => 'brief_prepared', 'updated_at' => $now], ['id' => (int) $request['inquiryId']]);
-        return new WP_REST_Response(['id' => $id, 'monthlyCount' => $monthly_count, 'contractMonths' => $contract_months, 'discountRate' => $discount_rate, 'templateKey' => $template_key, 'debugCanary' => VTP_VERSION . '-' . $source_type], 201);
+        return new WP_REST_Response(['id' => $id, 'monthlyCount' => $monthly_count, 'contractMonths' => $contract_months, 'discountRate' => $discount_rate, 'templateKey' => $template_key], 201);
     }
 
     public static function create_quotation_legacy(WP_REST_Request $request) {

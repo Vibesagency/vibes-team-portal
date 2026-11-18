@@ -107,7 +107,7 @@ body.login .language-switcher{display:none}
             <title><?php echo esc_html(is_page('team-login') ? 'Vibes Team Login' : (is_page('quotation-review') ? 'Review Vibes Quotation' : (is_page('project-review') ? 'Review Vibes Project' : 'Vibes Team Portal'))); ?></title>
             <?php if (is_page(['team-login', 'team-portal'])) : ?>
             <link rel="manifest" href="<?php echo esc_url(VTP_URL . 'assets/images/manifest.json'); ?>">
-            <meta name="theme-color" content="#5d1ee5">
+            <meta name="theme-color" content="#5B2A9A">
             <link rel="apple-touch-icon" href="<?php echo esc_url(VTP_URL . 'assets/images/apple-touch-icon.png'); ?>">
             <meta name="apple-mobile-web-app-capable" content="yes">
             <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">

@@ -1369,15 +1369,19 @@ final class VPM_REST {
 
     public static function payslip_pdf(WP_REST_Request $request) {
         $data = self::payslip_data($request); if (is_wp_error($data)) return $data;
+        $pdf_bytes = self::payslip_pdf_document($data);
+        do_action('vtp_payslip_generated', $data, $pdf_bytes);
         $filename = 'Payslip_' . sanitize_file_name((string) $data['employeeName']) . '_' . str_replace('-', '', (string) $data['period']) . '.pdf';
-        return new WP_REST_Response(['__vpm_binary_export' => true, 'content' => self::payslip_pdf_document($data), 'filename' => $filename, 'mime' => 'application/pdf'], 200);
+        return new WP_REST_Response(['__vpm_binary_export' => true, 'content' => $pdf_bytes, 'filename' => $filename, 'mime' => 'application/pdf'], 200);
     }
 
     public static function payslip_send(WP_REST_Request $request) {
         $data = self::payslip_data($request); if (is_wp_error($data)) return $data;
         $recipient = sanitize_email((string) $data['email']); if (!$recipient || !is_email($recipient)) return self::error('missing_employee_email', 'The employee has no valid work email configured.');
+        $pdf_bytes = self::payslip_pdf_document($data);
+        do_action('vtp_payslip_generated', $data, $pdf_bytes);
         $filename = 'Payslip_' . sanitize_file_name((string) $data['employeeName']) . '_' . str_replace('-', '', (string) $data['period']) . '.pdf';
-        $path = tempnam(sys_get_temp_dir(), 'vibes-payslip-'); if (!$path || file_put_contents($path, self::payslip_pdf_document($data)) === false) return self::error('payslip_file_failed', 'The payslip PDF could not be prepared.', 500);
+        $path = tempnam(sys_get_temp_dir(), 'vibes-payslip-'); if (!$path || file_put_contents($path, $pdf_bytes) === false) return self::error('payslip_file_failed', 'The payslip PDF could not be prepared.', 500);
         $headers = ['From: Vibes Agency <admin@vibesagency.co>', 'Reply-To: admin@vibesagency.co'];
         $subject = 'Vibes Agency payslip — ' . (string) $data['periodLabel'];
         $sent = wp_mail($recipient, $subject, 'Hello ' . (string) $data['employeeName'] . ",\\n\\nAttached is your confidential Vibes Agency payslip for " . (string) $data['periodLabel'] . ".\\n\\nVibes Agency", $headers, [$path]);

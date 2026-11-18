@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Vibes Drive Automation
  * Description: Connects the Vibes Team Portal project lifecycle to a controlled Google Drive folder workflow.
- * Version: 0.4.5
+ * Version: 0.5.0
  * Author: Vibes Agency
  */
 
@@ -58,6 +58,24 @@ function vibes_drive_inquiries_root_id() {
 function vibes_drive_quotations_root_id() {
     $s = vibes_drive_settings();
     return (string) ($s['quotations_folder_id'] ?: $s['clients_folder_id']);
+}
+
+// Finds (or lazily creates) a top-level folder under the Drive root, caching
+// its id so repeat calls don't re-search Drive. Never shared with anyone —
+// these are admin-only archive folders (invoices, payslips) that employees
+// must never see, so no permissions call is ever made against them.
+function vibes_drive_named_root($name) {
+    $option_key = 'vibes_drive_root_' . sanitize_title($name);
+    $cached = get_option($option_key, '');
+    if ($cached) { return $cached; }
+    $s = vibes_drive_settings();
+    if (empty($s['root_folder_id'])) { return new WP_Error('vibes_drive_root_missing', 'Drive root folder is not configured.'); }
+    $existing = vibes_drive_find_child($s['root_folder_id'], $name);
+    if (is_wp_error($existing)) { return $existing; }
+    $folder = $existing ?: vibes_drive_create_folder($name, $s['root_folder_id']);
+    if (is_wp_error($folder)) { return $folder; }
+    update_option($option_key, $folder['id'], false);
+    return $folder['id'];
 }
 
 function vibes_drive_admin_url() {
@@ -395,6 +413,86 @@ function vibes_drive_inquiry_pdf(array $inquiry) {
     $pdf = "%PDF-1.4\n%\xE2\xE3\xCF\xD3\n"; $offsets = [0]; foreach ($objects as $index => $object) { $offsets[$index + 1] = strlen($pdf); $pdf .= ($index + 1) . " 0 obj\n" . $object . "\nendobj\n"; } $xref = strlen($pdf); $pdf .= "xref\n0 6\n0000000000 65535 f \n"; for ($i = 1; $i <= 5; $i++) $pdf .= sprintf("%010d 00000 n \n", $offsets[$i]); $pdf .= "trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n" . $xref . "\n%%EOF";
     return $pdf;
 }
+
+// Self-contained invoice PDF for archival (mirrors the portal's own invoice
+// design closely enough to be a usable record; it does not need to be
+// pixel-identical since the portal's PDF is already emailed to the client).
+function vibes_drive_invoice_pdf(array $invoice) {
+    $items = json_decode($invoice['items_json'] ?? '[]', true) ?: [];
+    $currency = (string) ($invoice['currency'] ?: 'SAR');
+    $lines = []; $y = 740;
+    $add = static function ($text, $x, $size = 9, $color = '0.14 0.10 0.19') use (&$lines, &$y) { $lines[] = [(string) $text, $x, $y, $size, $color]; $y -= $size + 7; };
+    $add('VIBES AGENCY', 48, 22, '0.38 0.20 0.55');
+    $add('INVOICE ' . ($invoice['invoice_number'] ?? ''), 340, 11, '0.38 0.20 0.55');
+    $add('Issued: ' . wp_date('d M Y', strtotime((string) ($invoice['created_at'] ?? 'now'))), 340, 8, '0.36 0.32 0.42');
+    $add('Due: ' . (!empty($invoice['due_date']) ? wp_date('d M Y', strtotime((string) $invoice['due_date'])) : '—'), 340, 8, '0.36 0.32 0.42');
+    $y = 640; $add('BILLED TO', 48, 8, '0.38 0.20 0.55'); $add((string) ($invoice['company'] ?: $invoice['client_name']), 48, 14); $add((string) $invoice['email'], 48, 8, '0.36 0.32 0.42');
+    $y = 560;
+    $lines[] = ['SERVICE / DELIVERABLE', 48, $y, 9, '1 1 1']; $lines[] = ['QTY', 400, $y, 9, '1 1 1']; $lines[] = ['TOTAL', 480, $y, 9, '1 1 1']; $y -= 24;
+    foreach ($items as $item) {
+        $desc = trim((string) ($item['description'] ?? $item['name'] ?? 'Service'));
+        $desc = function_exists('mb_strimwidth') ? mb_strimwidth($desc, 0, 50, '...') : substr($desc, 0, 50);
+        $lines[] = [$desc, 48, $y, 9, '0.14 0.10 0.19'];
+        $lines[] = [number_format((float) ($item['quantity'] ?? 1), 2), 400, $y, 9, '0.14 0.10 0.19'];
+        $lines[] = [$currency . ' ' . number_format((float) ($item['total'] ?? 0), 2), 480, $y, 9, '0.14 0.10 0.19'];
+        $y -= 20;
+    }
+    $y -= 10;
+    $add('Subtotal: ' . $currency . ' ' . number_format((float) ($invoice['subtotal'] ?? 0), 2), 340, 9, '0.36 0.32 0.42');
+    if ((float) ($invoice['discount_amount'] ?? 0) > 0) { $add('Discount: -' . $currency . ' ' . number_format((float) $invoice['discount_amount'], 2), 340, 9, '0.36 0.32 0.42'); }
+    $add('VAT (' . number_format((float) ($invoice['vat_rate'] ?? 0), 2) . '%): ' . $currency . ' ' . number_format((float) ($invoice['vat_amount'] ?? 0), 2), 340, 9, '0.36 0.32 0.42');
+    $add('TOTAL DUE: ' . $currency . ' ' . number_format((float) ($invoice['total'] ?? 0), 2), 340, 13, '0.38 0.20 0.55');
+    $stream = "q\n0.38 0.20 0.55 rg\n0 760 612 32 re f\nQ\n";
+    foreach ($lines as $line) {
+        [$text, $x, $line_y, $size, $color] = $line;
+        $stream .= $color . " rg\nBT /F1 " . $size . " Tf " . $x . ' ' . $line_y . " Td (" . vibes_drive_pdf_escape($text) . ") Tj ET\n";
+    }
+    $objects = ['<< /Type /Catalog /Pages 2 0 R >>', '<< /Type /Pages /Kids [3 0 R] /Count 1 >>', '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>', '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>', '<< /Length ' . strlen($stream) . " >>\nstream\n" . $stream . 'endstream'];
+    $pdf = "%PDF-1.4\n%\xE2\xE3\xCF\xD3\n"; $offsets = [0]; foreach ($objects as $index => $object) { $offsets[$index + 1] = strlen($pdf); $pdf .= ($index + 1) . " 0 obj\n" . $object . "\nendobj\n"; } $xref = strlen($pdf); $pdf .= "xref\n0 6\n0000000000 65535 f \n"; for ($i = 1; $i <= 5; $i++) { $pdf .= sprintf("%010d 00000 n \n", $offsets[$i]); } $pdf .= "trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n" . $xref . "\n%%EOF";
+    return $pdf;
+}
+
+// Archives every invoice to an admin-only "Invoices" root, organized by
+// client. Never shared with employees — fires on 'vtp_invoice_created',
+// an action the portal fires right after it inserts a new invoice row,
+// whether auto-generated on client approval or created manually.
+function vibes_drive_invoice_sync($invoice_id) {
+    global $wpdb;
+    $invoice_id = (int) $invoice_id;
+    if (!$invoice_id) { return; }
+    $invoice = $wpdb->get_row($wpdb->prepare('SELECT * FROM ' . $wpdb->prefix . 'vtp_invoices WHERE id=%d', $invoice_id), ARRAY_A);
+    if (!$invoice) { return; }
+    $root = vibes_drive_named_root('Invoices');
+    if (is_wp_error($root)) { return; }
+    $client = vibes_drive_name_part($invoice['client_name'] ?? '', 'Client');
+    $client_folder = vibes_drive_find_child($root, $client);
+    if (is_wp_error($client_folder)) { return; }
+    if (!$client_folder) { $client_folder = vibes_drive_create_folder($client, $root); if (is_wp_error($client_folder)) { return; } }
+    $name = sanitize_file_name(($invoice['invoice_number'] ?: ('Invoice-' . $invoice_id)) . '.pdf');
+    $existing = vibes_drive_find_child($client_folder['id'], $name);
+    if (is_wp_error($existing)) { return; }
+    vibes_drive_upload_raw($name, vibes_drive_invoice_pdf($invoice), 'application/pdf', $client_folder['id'], $existing['id'] ?? '');
+}
+add_action('vtp_invoice_created', 'vibes_drive_invoice_sync');
+
+// Archives every generated payslip to an admin-only "Payslips" root,
+// organized by employee. Never shared with employees — fires whenever the
+// portal's finance module renders or emails a payslip PDF, reusing that
+// exact PDF (passed as $pdf_bytes) rather than re-rendering it here.
+function vibes_drive_payslip_sync($data, $pdf_bytes) {
+    if (empty($data['employeeId']) || empty($data['period']) || !$pdf_bytes) { return; }
+    $root = vibes_drive_named_root('Payslips');
+    if (is_wp_error($root)) { return; }
+    $employee = vibes_drive_name_part($data['employeeName'] ?? '', 'Employee');
+    $employee_folder = vibes_drive_find_child($root, $employee);
+    if (is_wp_error($employee_folder)) { return; }
+    if (!$employee_folder) { $employee_folder = vibes_drive_create_folder($employee, $root); if (is_wp_error($employee_folder)) { return; } }
+    $name = sanitize_file_name('Payslip_' . $data['period'] . '.pdf');
+    $existing = vibes_drive_find_child($employee_folder['id'], $name);
+    if (is_wp_error($existing)) { return; }
+    vibes_drive_upload_raw($name, $pdf_bytes, 'application/pdf', $employee_folder['id'], $existing['id'] ?? '');
+}
+add_action('vtp_payslip_generated', 'vibes_drive_payslip_sync', 10, 2);
 
 function vibes_drive_inquiry_sync(array $inquiry) {
     $root_id = vibes_drive_inquiries_root_id();

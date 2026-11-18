@@ -1094,6 +1094,7 @@ class VTP_REST {
                 'due_date' => $due, 'status' => 'draft', 'payment_link' => 'https://vibesagency.co/pay-invoice', 'generated_automatically' => 1, 'created_by' => get_current_user_id(), 'created_at' => $now, 'updated_at' => $now,
             ]);
             $invoice_id = (int) $wpdb->insert_id;
+            if ($invoice_id) { do_action('vtp_invoice_created', $invoice_id); }
         }
         if (!$invoice_id) return null;
         $invoice = $wpdb->get_row($wpdb->prepare('SELECT * FROM ' . self::table('invoices') . ' WHERE id=%d', $invoice_id), ARRAY_A);
@@ -1354,7 +1355,9 @@ class VTP_REST {
             'payment_link' => esc_url_raw($request['paymentLink'], ['https']) ?: 'https://vibesagency.co/pay-invoice', 'generated_automatically' => 0,
             'created_by' => get_current_user_id(), 'created_at' => $now, 'updated_at' => $now,
         ]);
-        return new WP_REST_Response(['id' => (int) $wpdb->insert_id], 201);
+        $new_invoice_id = (int) $wpdb->insert_id;
+        if ($new_invoice_id) { do_action('vtp_invoice_created', $new_invoice_id); }
+        return new WP_REST_Response(['id' => $new_invoice_id], 201);
     }
 
     private static function sync_invoice_payment(array $invoice, string $paid_at): array|WP_Error {

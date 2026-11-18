@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Vibes Drive Automation
  * Description: Connects the Vibes Team Portal project lifecycle to a controlled Google Drive folder workflow.
- * Version: 0.5.0
+ * Version: 0.5.1
  * Author: Vibes Agency
  */
 
@@ -1345,6 +1345,24 @@ add_action('rest_api_init', static function () {
             $path = vibes_drive_mapped_local_path($folder_id);
             if (is_wp_error($path)) { return $path; }
             return ['folder_id' => $folder_id, 'mapped_path' => $path];
+        },
+    ]);
+
+    // TEMPORARY debug endpoint: list a folder's children, or the cached id
+    // of a named root (invoices/payslips) when no folder_id is given.
+    // Remove after use.
+    register_rest_route('vibes-drive/v1', '/debug-list', [
+        'methods' => 'GET',
+        'permission_callback' => static function () { return current_user_can('manage_options'); },
+        'callback' => static function (WP_REST_Request $request) {
+            $folder_id = sanitize_text_field((string) $request->get_param('folder_id'));
+            $root_name = sanitize_text_field((string) $request->get_param('root_name'));
+            if (!$folder_id && $root_name) { $folder_id = vibes_drive_named_root($root_name); }
+            if (is_wp_error($folder_id)) { return ['error' => $folder_id->get_error_message()]; }
+            if (!$folder_id) { return new WP_Error('missing_folder_id', 'folder_id or root_name required.'); }
+            $children = vibes_drive_list_children($folder_id);
+            if (is_wp_error($children)) { return ['folder_id' => $folder_id, 'error' => $children->get_error_message()]; }
+            return ['folder_id' => $folder_id, 'children' => array_map(static fn($c) => ['id' => $c['id'] ?? '', 'name' => $c['name'] ?? '', 'mimeType' => $c['mimeType'] ?? ''], $children)];
         },
     ]);
 

@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Vibes Drive Automation
  * Description: Connects the Vibes Team Portal project lifecycle to a controlled Google Drive folder workflow.
- * Version: 0.4.4
+ * Version: 0.4.5
  * Author: Vibes Agency
  */
 
@@ -1247,60 +1247,6 @@ add_action('rest_api_init', static function () {
             $path = vibes_drive_mapped_local_path($folder_id);
             if (is_wp_error($path)) { return $path; }
             return ['folder_id' => $folder_id, 'mapped_path' => $path];
-        },
-    ]);
-
-    // TEMPORARY debug endpoint: trash a single folder by id, surfacing the
-    // full Drive API error data. Remove after use.
-    register_rest_route('vibes-drive/v1', '/trash-folder', [
-        'methods' => 'POST',
-        'permission_callback' => static function () { return current_user_can('manage_options'); },
-        'callback' => static function (WP_REST_Request $request) {
-            $folder_id = sanitize_text_field((string) $request->get_param('folder_id'));
-            if (!$folder_id) { return new WP_Error('missing_folder_id', 'folder_id required.'); }
-            $trash = vibes_drive_api('PATCH', 'files/' . rawurlencode($folder_id), ['trashed' => true]);
-            if (is_wp_error($trash)) {
-                return ['ok' => false, 'error' => $trash->get_error_message(), 'data' => $trash->get_error_data()];
-            }
-            return ['ok' => true, 'result' => $trash];
-        },
-    ]);
-
-    // TEMPORARY one-off cleanup endpoint: wipes all currently-mapped test
-    // projects (portal rows + tasks + their Drive folders). Remove after use.
-    register_rest_route('vibes-drive/v1', '/wipe-test-projects', [
-        'methods' => 'POST',
-        'permission_callback' => static function () { return current_user_can('manage_options'); },
-        'callback' => static function () {
-            $map = vibes_drive_map();
-            $project_ids = array_keys($map);
-            $client_ids = [];
-            $drive_results = [];
-            foreach ($map as $pid => $entry) {
-                if (!empty($entry['client_folder_id'])) { $client_ids[$entry['client_folder_id']] = true; }
-                if (!empty($entry['project_folder_id'])) {
-                    $trash = vibes_drive_api('PATCH', 'files/' . rawurlencode($entry['project_folder_id']), ['trashed' => true]);
-                    $drive_results['project_' . $pid] = is_wp_error($trash) ? $trash->get_error_message() : 'trashed';
-                }
-            }
-            foreach (array_keys($client_ids) as $cid) {
-                $trash = vibes_drive_api('PATCH', 'files/' . rawurlencode($cid), ['trashed' => true]);
-                $drive_results['client_' . $cid] = is_wp_error($trash) ? $trash->get_error_message() : 'trashed';
-            }
-            $deleted_projects = 0;
-            $deleted_tasks = 0;
-            foreach ($project_ids as $pid) {
-                $response = rest_do_request(new WP_REST_Request('DELETE', '/vibes/v1/projects/' . (int) $pid));
-                if (!is_wp_error($response) && $response->get_status() < 300) {
-                    $data = $response->get_data();
-                    $deleted_projects++;
-                    $deleted_tasks += (int) ($data['deletedTasks'] ?? 0);
-                } else {
-                    $drive_results['portal_delete_' . $pid] = is_wp_error($response) ? $response->get_error_message() : wp_json_encode($response->get_data());
-                }
-            }
-            vibes_drive_save_map([]);
-            return ['deleted_projects' => $deleted_projects, 'deleted_tasks' => $deleted_tasks, 'drive_results' => $drive_results];
         },
     ]);
 

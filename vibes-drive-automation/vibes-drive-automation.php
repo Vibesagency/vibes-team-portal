@@ -141,7 +141,7 @@ function vibes_drive_render_settings() {
         <?php if (isset($_GET['migrated'])) :
             $migration_result = get_transient('vibes_drive_migration_result');
             if (is_wp_error($migration_result)) : ?>
-                <div class="notice notice-error"><p>Migration failed: <?php echo esc_html($migration_result->get_error_message()); ?></p></div>
+                <div class="notice notice-error"><p>Migration failed: <?php echo esc_html($migration_result->get_error_message()); ?></p><pre style="white-space:pre-wrap"><?php echo esc_html((string) wp_json_encode($migration_result->get_error_data())); ?></pre></div>
             <?php elseif (is_array($migration_result)) : ?>
                 <div class="notice notice-success"><p>Migration ran against Shared Drive <code><?php echo esc_html($migration_result['shared_drive_id'] ?? ''); ?></code>:</p>
                 <ul style="list-style:disc;margin-left:20px">

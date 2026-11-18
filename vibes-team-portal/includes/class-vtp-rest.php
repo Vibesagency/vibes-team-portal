@@ -223,6 +223,14 @@ class VTP_REST {
             'methods' => 'DELETE', 'callback' => [self::class, 'delete_files_brand_client'],
             'permission_callback' => [self::class, 'manage_files_brand'],
         ]);
+        register_rest_route(self::NS, '/drive-settings', [
+            ['methods' => 'GET', 'callback' => [self::class, 'drive_settings'], 'permission_callback' => [self::class, 'manage_files_brand']],
+            ['methods' => 'POST', 'callback' => [self::class, 'save_drive_settings'], 'permission_callback' => [self::class, 'manage_files_brand']],
+        ]);
+        register_rest_route(self::NS, '/drive/mapped-path', [
+            'methods' => 'GET', 'callback' => [self::class, 'drive_mapped_path'],
+            'permission_callback' => [self::class, 'logged_in'],
+        ]);
     }
 
     public static function logged_in(): bool { return is_user_logged_in(); }
@@ -1088,14 +1096,15 @@ class VTP_REST {
                 $term = $candidate;
             }
         }
-        $structure = self::project_structure((string) ($request['name'] ?: (($quote['company'] ?: $quote['client_name']) . ' — ' . $quote['quote_number'])), $items, $term);
+        $project_name = sanitize_text_field($request['name']) ?: ($quote['company'] ?: $quote['client_name']) . ' — ' . $quote['quote_number'];
+        $structure = self::project_structure($project_name, $items, $term);
         $now = current_time('mysql');
         $project_due = sanitize_text_field($request['dueDate']);
         if ($project_due && !self::valid_date($project_due)) return new WP_Error('invalid_project_due_date', 'Choose a valid project delivery date.', ['status' => 400]);
         $wpdb->query('START TRANSACTION');
         $wpdb->insert(self::table('projects'), [
             'quotation_id' => (int) $quote['id'],
-            'name' => sanitize_text_field($request['name']) ?: ($quote['company'] ?: $quote['client_name']) . ' — ' . $quote['quote_number'],
+            'name' => $project_name,
             'client' => $quote['company'] ?: $quote['client_name'], 'description' => $brief,
             'status' => 'active', 'progress' => 0, 'lead_user_id' => (int) $request['leadUserId'] ?: null,
             'due_date' => $project_due ?: null, 'delivery_term' => $term,
@@ -1109,6 +1118,10 @@ class VTP_REST {
             $wpdb->query('ROLLBACK');
             return new WP_Error('project_failed', 'The project could not be created.', ['status' => 500]);
         }
+        $drive_fields = self::bootstrap_project_drive_folder($project_name, (string) $request['internalDriveUrl']);
+        if ($drive_fields) $wpdb->update(self::table('projects'), $drive_fields, ['id' => $project_id]);
+        $drive_internal_folder_id = $drive_fields['drive_internal_folder_id'] ?? null;
+        $drive_internal_relpath = $drive_fields['drive_internal_relpath'] ?? null;
         $task_count = 0;
         foreach ($items as $index => $item) {
             $assignment = $assignment_map[$index];
@@ -1149,6 +1162,10 @@ class VTP_REST {
                 if (!$task_id) {
                     $wpdb->query('ROLLBACK');
                     return new WP_Error('task_failed', 'A quoted service task could not be created.', ['status' => 500]);
+                }
+                if ($drive_internal_folder_id) {
+                    $task_drive_fields = self::bootstrap_task_drive_folder($drive_internal_folder_id, $drive_internal_relpath, $task_number, $month_title);
+                    if ($task_drive_fields) $wpdb->update(self::table('tasks'), $task_drive_fields, ['id' => $task_id]);
                 }
                 $task_count++;
                 $wpdb->insert(self::table('notifications'), [
@@ -1216,9 +1233,43 @@ class VTP_REST {
         $client_drive_url = esc_url_raw((string) $request['clientDriveUrl'], ['https']);
         $internal_drive_url = esc_url_raw((string) $request['internalDriveUrl'], ['https']);
         $now = current_time('mysql');
+
+        // Internal work is now approved for sending — this is the point where
+        // the automated Client folder gets created (once) and this cycle's
+        // task folders get copied into it, so the admin never has to hand-copy
+        // deliverables out of the Internal workspace.
+        $auto_client_url = '';
+        if (!$client_drive_url && VTP_Drive::configured() && !empty($project['drive_project_folder_id'])) {
+            $project_folder_name = self::drive_safe_name((string) $project['name']);
+            $client_folder_id = $project['drive_client_folder_id'] ?: null;
+            if (!$client_folder_id) {
+                $client_root = VTP_Drive::create_folder('Client', (string) $project['drive_project_folder_id']);
+                if (!is_wp_error($client_root)) {
+                    $client_folder_id = (string) $client_root['id'];
+                    $wpdb->update(self::table('projects'), [
+                        'drive_client_folder_id' => $client_folder_id,
+                        'drive_client_relpath' => $project_folder_name . '/Client',
+                    ], ['id' => $project_id]);
+                }
+            }
+            if ($client_folder_id) {
+                $month_label = $month ? wp_date('F Y', strtotime($month . '-01')) : 'Delivery';
+                $month_folder = VTP_Drive::find_or_create_folder(self::drive_safe_name((string) $month_label), $client_folder_id);
+                if (!is_wp_error($month_folder)) {
+                    foreach ($tasks as $cycle_task) {
+                        if (empty($cycle_task['drive_folder_id'])) continue;
+                        $task_folder_name = self::drive_safe_name(trim($cycle_task['task_number'] . ' — ' . $cycle_task['title'], ' —'));
+                        $task_dest = VTP_Drive::find_or_create_folder($task_folder_name, (string) $month_folder['id']);
+                        if (!is_wp_error($task_dest)) VTP_Drive::copy_folder_contents((string) $cycle_task['drive_folder_id'], (string) $task_dest['id']);
+                    }
+                }
+                $auto_client_url = VTP_Drive::folder_url($client_folder_id);
+            }
+        }
+
         $wpdb->update(self::table('projects'), [
             'client_review_token' => $token, 'client_review_status' => 'sent', 'client_review_month' => $month,
-            'client_review_at' => $now, 'drive_client_url' => $client_drive_url ?: ($project['drive_client_url'] ?? ''),
+            'client_review_at' => $now, 'drive_client_url' => $client_drive_url ?: ($auto_client_url ?: ($project['drive_client_url'] ?? '')),
             'drive_internal_url' => $internal_drive_url ?: ($project['drive_internal_url'] ?? ''), 'updated_at' => $now,
         ], ['id' => $project_id]);
         $review_url = add_query_arg('token', $token, home_url('/project-review/'));
@@ -1553,7 +1604,10 @@ class VTP_REST {
             'due_date' => sanitize_text_field($request['dueDate']) ?: null, 'created_by' => get_current_user_id(),
             'created_at' => $now, 'updated_at' => $now,
         ]);
-        return new WP_REST_Response(['id' => $wpdb->insert_id], 201);
+        $project_id = (int) $wpdb->insert_id;
+        $drive_fields = self::bootstrap_project_drive_folder($name, '');
+        if ($drive_fields && $project_id) $wpdb->update(self::table('projects'), $drive_fields, ['id' => $project_id]);
+        return new WP_REST_Response(['id' => $project_id], 201);
     }
 
     public static function delete_project(WP_REST_Request $request) {
@@ -1582,6 +1636,7 @@ class VTP_REST {
         foreach ($rows as &$row) {
             $row['files'] = !empty($row['files_json']) ? (json_decode($row['files_json'], true) ?: []) : [];
             unset($row['files_json']);
+            $row['drive_folder_url'] = !empty($row['drive_folder_id']) ? VTP_Drive::folder_url((string) $row['drive_folder_id']) : '';
         }
         return rest_ensure_response($rows);
     }
@@ -1614,6 +1669,29 @@ class VTP_REST {
             'created_at' => $now, 'updated_at' => $now,
         ]);
         $task_id = (int) $wpdb->insert_id;
+        $project_id = (int) $request['projectId'];
+        if ($task_id && $project_id) {
+            $project = $wpdb->get_row($wpdb->prepare('SELECT name, drive_internal_folder_id, drive_internal_relpath, drive_internal_url FROM ' . self::table('projects') . ' WHERE id=%d', $project_id), ARRAY_A);
+            if ($project) {
+                $internal_folder_id = $project['drive_internal_folder_id'];
+                $internal_relpath = $project['drive_internal_relpath'];
+                // Projects created before Drive automation was configured (or
+                // before this feature existed) won't have an Internal folder
+                // yet — bootstrap one now so the task still gets a subfolder.
+                if (!$internal_folder_id) {
+                    $drive_fields = self::bootstrap_project_drive_folder((string) $project['name'], (string) $project['drive_internal_url']);
+                    if ($drive_fields) {
+                        $wpdb->update(self::table('projects'), $drive_fields, ['id' => $project_id]);
+                        $internal_folder_id = $drive_fields['drive_internal_folder_id'];
+                        $internal_relpath = $drive_fields['drive_internal_relpath'];
+                    }
+                }
+                if ($internal_folder_id) {
+                    $task_drive_fields = self::bootstrap_task_drive_folder($internal_folder_id, (string) $internal_relpath, $task_number, $title);
+                    if ($task_drive_fields) $wpdb->update(self::table('tasks'), $task_drive_fields, ['id' => $task_id]);
+                }
+            }
+        }
         $wpdb->insert(self::table('notifications'), [
             'user_id' => $assignee, 'type' => 'task_assigned', 'title' => 'A new task was assigned to you',
             'body' => $title, 'object_type' => 'task', 'object_id' => $task_id, 'created_at' => $now,
@@ -2354,5 +2432,128 @@ class VTP_REST {
         if (count($data['clients']) === $before) return new WP_Error('client_not_found', 'Client folder was not found.', ['status' => 404]);
         update_option('vtp_files_brand', $data, false);
         return rest_ensure_response(self::files_brand_response());
+    }
+
+    /* ---------------------------------------------------------------------
+     * Google Drive automation: auto-create a project folder (with an
+     * Internal subfolder and a per-task subfolder inside it), and, once a
+     * delivery cycle is sent for client review, auto-create a Client folder
+     * and copy that cycle's task folders into it.
+     * ------------------------------------------------------------------- */
+
+    private static function drive_safe_name(string $name): string {
+        $name = str_replace(['/', '\\'], '-', $name);
+        $name = trim(preg_replace('/\s+/', ' ', $name) ?? '');
+        return $name !== '' ? mb_substr($name, 0, 140) : 'Untitled';
+    }
+
+    /**
+     * Creates "{project name}/Internal" inside the Drive automation root,
+     * unless an internal Drive URL was already supplied manually. Returns the
+     * project columns to persist, or null if nothing was created.
+     */
+    private static function bootstrap_project_drive_folder(string $project_name, string $existing_internal_url): ?array {
+        if ($existing_internal_url || !VTP_Drive::configured()) return null;
+        $root = VTP_Drive::ensure_root_folder();
+        if (is_wp_error($root)) return null;
+        $project_folder_name = self::drive_safe_name($project_name);
+        $project_folder = VTP_Drive::create_folder($project_folder_name, $root);
+        if (is_wp_error($project_folder)) return null;
+        $internal_folder = VTP_Drive::create_folder('Internal', (string) $project_folder['id']);
+        if (is_wp_error($internal_folder)) return null;
+        return [
+            'drive_project_folder_id' => (string) $project_folder['id'],
+            'drive_internal_folder_id' => (string) $internal_folder['id'],
+            'drive_internal_relpath' => $project_folder_name . '/Internal',
+            'drive_internal_url' => VTP_Drive::folder_url((string) $internal_folder['id']),
+        ];
+    }
+
+    /** Creates a task subfolder inside the project's Internal folder. Returns the task columns to persist, or null. */
+    private static function bootstrap_task_drive_folder(string $internal_folder_id, string $internal_relpath, string $task_number, string $title): ?array {
+        $task_folder_name = self::drive_safe_name(trim($task_number . ' — ' . $title, ' —'));
+        $task_folder = VTP_Drive::create_folder($task_folder_name, $internal_folder_id);
+        if (is_wp_error($task_folder)) return null;
+        return [
+            'drive_folder_id' => (string) $task_folder['id'],
+            'drive_relpath' => $internal_relpath . '/' . $task_folder_name,
+        ];
+    }
+
+    public static function drive_settings(): WP_REST_Response {
+        return rest_ensure_response(self::drive_settings_response());
+    }
+
+    private static function drive_settings_response(): array {
+        $s = VTP_Drive::raw_settings();
+        $email = '';
+        if (!empty($s['service_account_json'])) {
+            $decoded = json_decode((string) $s['service_account_json'], true);
+            $email = is_array($decoded) ? (string) ($decoded['client_email'] ?? '') : '';
+        }
+        return [
+            'configured' => VTP_Drive::configured(),
+            'serviceAccountEmail' => $email,
+            'sharedDriveId' => (string) ($s['shared_drive_id'] ?? ''),
+            'localRootPath' => (string) ($s['local_root_path'] ?? ''),
+            'rootFolderUrl' => !empty($s['root_folder_id']) ? VTP_Drive::folder_url((string) $s['root_folder_id']) : '',
+            'lastError' => (string) ($s['last_error'] ?? ''),
+            'lastCheckedAt' => (string) ($s['last_checked_at'] ?? ''),
+        ];
+    }
+
+    public static function save_drive_settings(WP_REST_Request $request) {
+        $params = $request->get_json_params();
+        if (!is_array($params)) $params = [];
+        $existing = VTP_Drive::raw_settings();
+        $json = trim((string) ($params['serviceAccountJson'] ?? ''));
+        if ($json === '') {
+            $json = (string) ($existing['service_account_json'] ?? '');
+        } else {
+            $decoded = json_decode($json, true);
+            if (!is_array($decoded) || empty($decoded['private_key']) || empty($decoded['client_email'])) {
+                return new WP_Error('invalid_service_account', 'That does not look like a valid Google service-account JSON key.', ['status' => 400]);
+            }
+        }
+        $shared_drive_id = sanitize_text_field((string) ($params['sharedDriveId'] ?? ''));
+        if (!$shared_drive_id) return new WP_Error('missing_shared_drive_id', 'Add the Shared Drive ID.', ['status' => 400]);
+        $local_root_path = sanitize_text_field((string) ($params['localRootPath'] ?? ''));
+        $keep_root_folder = ($existing['shared_drive_id'] ?? '') === $shared_drive_id && ($existing['service_account_json'] ?? '') === $json;
+        $settings = [
+            'service_account_json' => $json,
+            'shared_drive_id' => $shared_drive_id,
+            'local_root_path' => $local_root_path,
+            'root_folder_id' => $keep_root_folder ? (string) ($existing['root_folder_id'] ?? '') : '',
+        ];
+        update_option(VTP_Drive::OPTION, $settings, false);
+        delete_transient('vtp_drive_token');
+        $root = VTP_Drive::ensure_root_folder();
+        if (is_wp_error($root)) {
+            $settings['last_error'] = $root->get_error_message();
+            update_option(VTP_Drive::OPTION, $settings, false);
+            return new WP_Error($root->get_error_code() ?: 'drive_connection_failed', 'Saved, but the connection test failed: ' . $root->get_error_message(), ['status' => 400]);
+        }
+        $settings['last_error'] = '';
+        $settings['last_checked_at'] = current_time('mysql');
+        update_option(VTP_Drive::OPTION, $settings, false);
+        return rest_ensure_response(self::drive_settings_response());
+    }
+
+    public static function drive_mapped_path(WP_REST_Request $request) {
+        $url = (string) $request->get_param('folderUrl');
+        $id = $url ? VTP_Drive::extract_folder_id($url) : null;
+        if (!$id) return rest_ensure_response(['mapped_path' => null]);
+        $settings = VTP_Drive::raw_settings();
+        $root = trim((string) ($settings['local_root_path'] ?? ''));
+        if (!$root) return rest_ensure_response(['mapped_path' => null]);
+        global $wpdb;
+        $sep = (strpos($root, '\\') !== false && strpos($root, '/') === false) ? '\\' : '/';
+        $root = rtrim($root, "/\\");
+        $relpath = $wpdb->get_var($wpdb->prepare('SELECT drive_internal_relpath FROM ' . self::table('projects') . ' WHERE drive_internal_folder_id=%s', $id));
+        if (!$relpath) $relpath = $wpdb->get_var($wpdb->prepare('SELECT drive_client_relpath FROM ' . self::table('projects') . ' WHERE drive_client_folder_id=%s', $id));
+        if (!$relpath) $relpath = $wpdb->get_var($wpdb->prepare('SELECT drive_relpath FROM ' . self::table('tasks') . ' WHERE drive_folder_id=%s', $id));
+        if (!$relpath) return rest_ensure_response(['mapped_path' => null]);
+        $relpath = str_replace('/', $sep, (string) $relpath);
+        return rest_ensure_response(['mapped_path' => $root . $sep . $relpath]);
     }
 }

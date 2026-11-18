@@ -124,6 +124,12 @@
 .vtp-drive-actions{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:8px}
 .vtp-duration-input{display:grid;grid-template-columns:minmax(0,1fr) minmax(90px,.5fr);gap:8px}
 .vtp-task-ontime{margin:6px 0}
+.vtp-task-drive-folder{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:8px 0}
+.vtp-drive-settings-card{display:grid;gap:4px}
+.vtp-drive-status-row{display:flex;align-items:center;gap:8px;font-size:13px;padding:4px 0}
+.vtp-drive-status-row small{color:var(--muted);min-width:140px}
+.vtp-drive-status-row code{background:#F5F2F9;color:#2E1A4F;padding:3px 7px;border-radius:6px;font-size:12px;word-break:break-all}
+.vtp-drive-json-input{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12px}
 .vtp-task-comment-list{display:grid;gap:10px;margin:18px 0}
 .vtp-task-comment{background:#faf8fd;border:1px solid var(--line);border-radius:10px;padding:10px 12px}
 .vtp-task-comment-head{display:flex;justify-content:space-between;gap:10px;margin-bottom:4px}

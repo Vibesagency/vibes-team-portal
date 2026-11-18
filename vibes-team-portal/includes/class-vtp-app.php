@@ -52,8 +52,7 @@ class VTP_App {
 
     public static function favicon(): void {
         if (has_site_icon()) return;
-        $svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" rx="14" fill="#5B2A9A"/><path d="M16 18l16 30 16-30" fill="none" stroke="#fff" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/></svg>';
-        echo '<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,' . rawurlencode($svg) . '">' . "\n";
+        echo '<link rel="icon" type="image/png" sizes="32x32" href="' . esc_url(VTP_URL . 'assets/images/favicon-32.png') . '">' . "\n";
     }
 
     public static function login_brand(): void {
@@ -107,7 +106,7 @@ body.login .language-switcher{display:none}
             <title><?php echo esc_html(is_page('team-login') ? 'Vibes Team Login' : (is_page('quotation-review') ? 'Review Vibes Quotation' : (is_page('project-review') ? 'Review Vibes Project' : 'Vibes Team Portal'))); ?></title>
             <?php if (is_page(['team-login', 'team-portal'])) : ?>
             <link rel="manifest" href="<?php echo esc_url(VTP_URL . 'assets/images/manifest.json'); ?>">
-            <meta name="theme-color" content="#5B2A9A">
+            <meta name="theme-color" content="#306898">
             <link rel="apple-touch-icon" href="<?php echo esc_url(VTP_URL . 'assets/images/apple-touch-icon.png'); ?>">
             <meta name="apple-mobile-web-app-capable" content="yes">
             <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">

@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Vibes Drive Automation
  * Description: Connects the Vibes Team Portal project lifecycle to a controlled Google Drive folder workflow.
- * Version: 0.4.0
+ * Version: 0.4.1
  * Author: Vibes Agency
  */
 
@@ -23,7 +23,6 @@ function vibes_drive_settings() {
         'inquiries_folder_id' => '1ehacYI0rV2lIV0FYFNThN63-Bo3AMSqe',
         'quotations_folder_id' => '1rRQckJ1T7YKfbBUvVq8cc9mP5YI8XKfr',
         'template_folder_id' => '112q1F3cwa6rZxGUffT2-raJxiV-mvYlJ',
-        'shared_drive_id' => '',
     ];
     return wp_parse_args((array) get_option(VIBES_DRIVE_OPTION, []), $defaults);
 }
@@ -83,8 +82,6 @@ add_action('admin_init', static function () {
                 'inquiries_folder_id' => sanitize_text_field($input['inquiries_folder_id'] ?? $old['inquiries_folder_id']),
                 'quotations_folder_id' => sanitize_text_field($input['quotations_folder_id'] ?? $old['quotations_folder_id']),
                 'template_folder_id' => sanitize_text_field($input['template_folder_id'] ?? $old['template_folder_id']),
-                // Set only by the Shared Drive migration routine, never by this form.
-                'shared_drive_id' => $old['shared_drive_id'],
             ];
         },
     ]);
@@ -130,32 +127,6 @@ function vibes_drive_render_settings() {
             <p>Save the OAuth client ID and secret first, then connect the Drive account.</p>
         <?php endif; ?>
         <p>Project mappings: <?php echo esc_html((string) count(vibes_drive_map())); ?></p>
-        <hr>
-        <h2>Shared Drive</h2>
-        <p>The Client Work folder tree needs to live inside a real Google Shared Drive for employees to get a genuine "can add, can't delete" (Contributor) role. This is a one-time move; it keeps every folder's existing ID and links, it just changes who owns it.</p>
-        <?php if (!empty($s['shared_drive_id'])) : ?>
-            <p>Status: <strong style="color:#1E6B45">Migrated — Shared Drive ID <code><?php echo esc_html($s['shared_drive_id']); ?></code></strong></p>
-        <?php else : ?>
-            <p>Status: <strong style="color:#9A3F0B">Not migrated yet — folders are still in a regular My Drive tree, so employee "writer" access can still delete files.</strong></p>
-        <?php endif; ?>
-        <?php if (isset($_GET['migrated'])) :
-            $migration_result = get_transient('vibes_drive_migration_result');
-            if (is_wp_error($migration_result)) : ?>
-                <div class="notice notice-error"><p>Migration failed: <?php echo esc_html($migration_result->get_error_message()); ?></p><pre style="white-space:pre-wrap"><?php echo esc_html((string) wp_json_encode($migration_result->get_error_data())); ?></pre></div>
-            <?php elseif (is_array($migration_result)) : ?>
-                <div class="notice notice-success"><p>Migration ran against Shared Drive <code><?php echo esc_html($migration_result['shared_drive_id'] ?? ''); ?></code>:</p>
-                <ul style="list-style:disc;margin-left:20px">
-                    <?php foreach ((array) ($migration_result['results'] ?? []) as $folder_id => $outcome) : ?>
-                        <li><code><?php echo esc_html($folder_id); ?></code> — <?php echo esc_html($outcome); ?></li>
-                    <?php endforeach; ?>
-                </ul></div>
-            <?php endif; ?>
-        <?php endif; ?>
-        <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>" onsubmit="return confirm('This moves the live Client Work folder tree into a Google Shared Drive. It keeps folder IDs and all existing links working, but double-check you want to do this now. Continue?');">
-            <input type="hidden" name="action" value="vibes_drive_migrate_shared_drive">
-            <?php wp_nonce_field('vibes_drive_migrate_shared_drive'); ?>
-            <?php submit_button(empty($s['shared_drive_id']) ? 'Create Shared Drive and migrate folders' : 'Re-run migration check', 'secondary', 'submit', false); ?>
-        </form>
         <hr>
         <h2>Quotation PDFs</h2>
         <p>Generated quotations are stored in Drive by client and quotation number. The portal reads the Drive copy, so you can replace the PDF in Drive without uploading it again.</p>
@@ -241,70 +212,6 @@ function vibes_drive_sync_existing_quotations() {
 }
 add_action('admin_post_vibes_drive_sync_quotations', 'vibes_drive_sync_existing_quotations');
 
-/** Create a brand-new Google Shared Drive (Team Drive). */
-function vibes_drive_create_shared_drive($name) {
-    $token = vibes_drive_access_token();
-    if (is_wp_error($token)) { return $token; }
-    $url = 'https://www.googleapis.com/drive/v3/drives?requestId=' . rawurlencode(wp_generate_uuid4()) . '&fields=id,name';
-    $response = wp_remote_request($url, [
-        'method' => 'POST', 'timeout' => 30,
-        'headers' => ['Authorization' => 'Bearer ' . $token, 'Content-Type' => 'application/json'],
-        'body' => wp_json_encode(['name' => $name]),
-    ]);
-    if (is_wp_error($response)) { return $response; }
-    $code = wp_remote_retrieve_response_code($response);
-    $data = json_decode(wp_remote_retrieve_body($response), true);
-    if ($code < 200 || $code >= 300) { return new WP_Error('vibes_drive_create_drive_error', 'Could not create the Shared Drive.', ['status' => $code, 'body' => $data]); }
-    return is_array($data) ? $data : [];
-}
-
-/**
- * One-time migration: creates (or reuses) a real Shared Drive and moves the
- * existing Client Work folder tree into it. Folders whose current parent is
- * itself one of the folders being migrated are left alone — moving the
- * ancestor already brings them along, since a move only changes the moved
- * item's own `parents`, not its descendants'.
- */
-function vibes_drive_migrate_to_shared_drive() {
-    $s = vibes_drive_settings();
-    $shared_drive_id = $s['shared_drive_id'];
-    if (!$shared_drive_id) {
-        $created = vibes_drive_create_shared_drive('Vibes Agency - Client Work');
-        if (is_wp_error($created)) { return $created; }
-        $shared_drive_id = (string) $created['id'];
-        $s['shared_drive_id'] = $shared_drive_id;
-        update_option(VIBES_DRIVE_OPTION, $s, false);
-    }
-    $candidate_ids = array_values(array_unique(array_filter([
-        (string) $s['root_folder_id'], (string) $s['clients_folder_id'], (string) $s['inquiries_folder_id'],
-        (string) $s['quotations_folder_id'], (string) $s['template_folder_id'],
-    ])));
-    $results = [];
-    foreach ($candidate_ids as $folder_id) {
-        $meta = vibes_drive_api('GET', 'files/' . rawurlencode($folder_id), null, ['fields' => 'id,name,parents,driveId']);
-        if (is_wp_error($meta)) { $results[$folder_id] = 'error: ' . $meta->get_error_message(); continue; }
-        if (!empty($meta['driveId']) && $meta['driveId'] === $shared_drive_id) { $results[$folder_id] = ($meta['name'] ?? $folder_id) . ': already in the Shared Drive'; continue; }
-        $parents = array_values(array_filter((array) ($meta['parents'] ?? [])));
-        if (array_intersect($parents, $candidate_ids)) { $results[$folder_id] = ($meta['name'] ?? $folder_id) . ': nested under another migrated folder, left alone'; continue; }
-        $query = ['addParents' => $shared_drive_id, 'fields' => 'id,name,parents,driveId'];
-        if ($parents) { $query['removeParents'] = implode(',', $parents); }
-        $moved = vibes_drive_api('PATCH', 'files/' . rawurlencode($folder_id), [], $query);
-        $results[$folder_id] = is_wp_error($moved) ? ('error: ' . $moved->get_error_message()) : (($moved['name'] ?? $folder_id) . ': moved into the Shared Drive');
-    }
-    return ['shared_drive_id' => $shared_drive_id, 'results' => $results];
-}
-
-function vibes_drive_run_migration() {
-    if (!current_user_can('manage_options')) { wp_die('You do not have permission to do this.'); }
-    check_admin_referer('vibes_drive_migrate_shared_drive');
-    $result = vibes_drive_migrate_to_shared_drive();
-    set_transient('vibes_drive_migration_result', $result, 10 * MINUTE_IN_SECONDS);
-    $url = add_query_arg(['page' => 'vibes-drive-automation', 'migrated' => 1], admin_url('options-general.php'));
-    wp_safe_redirect($url);
-    exit;
-}
-add_action('admin_post_vibes_drive_migrate_shared_drive', 'vibes_drive_run_migration');
-
 function vibes_drive_access_token() {
     $s = vibes_drive_settings();
     if (!$s['client_id'] || !$s['client_secret'] || !$s['refresh_token']) {
@@ -331,9 +238,9 @@ function vibes_drive_api($method, $path, $body = null, $query = []) {
     if (is_wp_error($token)) {
         return $token;
     }
-    // The whole Client Work tree lives in a Shared Drive. Every Drive v3 call
-    // that touches a Shared Drive item (or lists one's children) must carry
-    // these, or Google silently 404s the item or omits it from results.
+    // Harmless no-op against a regular My Drive item, but required by Drive
+    // v3 for any call that ever does touch a Shared Drive item (or lists
+    // one's children) — keeps this safe if that ever changes.
     if (!array_key_exists('supportsAllDrives', $query)) {
         $query['supportsAllDrives'] = 'true';
     }
@@ -1039,24 +946,9 @@ function vibes_drive_project_sync($payload) {
         if ($matched) { continue; }
         $services[] = ['name' => $name, 'label' => $label, 'folder_id' => $folder['id'], 'folder_url' => $folder['webViewLink'] ?? ('https://drive.google.com/drive/folders/' . $folder['id']), 'employee_email' => $email];
     }
-    // Share the WHOLE project folder (not just one service folder) with every
-    // employee assigned to anything in this project, so a teammate can see
-    // what their colleagues on the same project are doing. This grants
-    // 'writer', which inside a real Shared Drive is the Contributor role:
-    // add and edit, but never delete or move files out. Track who already
-    // has it so re-syncing the same project never re-sends invite emails.
-    $already_shared = array_map('strtolower', (array) ($existing['project_shared_emails'] ?? []));
-    $wanted_emails = [];
-    foreach ($services as $service_row) {
-        $candidate = (string) ($service_row['employee_email'] ?? '');
-        if ($candidate && is_email($candidate)) { $wanted_emails[strtolower($candidate)] = $candidate; }
-    }
-    $newly_shared = $already_shared;
-    foreach ($wanted_emails as $lower => $email) {
-        if (in_array($lower, $already_shared, true)) { continue; }
-        $granted = vibes_drive_api('POST', 'files/' . rawurlencode($project_folder['id']) . '/permissions', ['type' => 'user', 'role' => 'writer', 'emailAddress' => $email], ['sendNotificationEmail' => 'true']);
-        if (!is_wp_error($granted)) { $newly_shared[] = $lower; }
-    }
+    // No per-employee Drive sharing: everyone works from the shared
+    // accounts@vibesagency.co login directly, so there is no separate
+    // employee identity to invite into a folder it already owns.
     $map[$details['id']] = [
         'client_folder_id' => $client_folder['id'],
         'project_folder_id' => $project_folder['id'],
@@ -1067,7 +959,6 @@ function vibes_drive_project_sync($payload) {
         'project_name' => $project_name,
         'raw' => $details['raw'] ?? [],
         'submissions' => $existing['submissions'] ?? [],
-        'project_shared_emails' => array_values(array_unique($newly_shared)),
         'created_at' => current_time('mysql', true),
     ];
     vibes_drive_save_map($map);

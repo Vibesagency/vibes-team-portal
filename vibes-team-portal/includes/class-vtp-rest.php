@@ -237,6 +237,59 @@ class VTP_REST {
         return $user && in_array('administrator', (array) $user->roles, true);
     }
 
+    /**
+     * Read-only lookup into the separate "Vibes Drive Automation" plugin's own
+     * stored state. We never write to this option and never duplicate its routes;
+     * this purely surfaces its data inside the portal UI.
+     */
+    private static function vibes_drive_map(): array {
+        if (!function_exists('get_option')) return [];
+        return (array) get_option('vibes_drive_automation_project_map', []);
+    }
+
+    private static function vibes_drive_folder_link(?string $id): string {
+        return $id ? ('https://drive.google.com/drive/folders/' . $id) : '';
+    }
+
+    /**
+     * Work out the most relevant Drive folder + human-readable pipeline stage
+     * for a single task, given that task's project entry from the Drive
+     * automation plugin's map. Falls back to the pre-submission working
+     * folder (matched by title) when the task hasn't been submitted yet.
+     */
+    private static function drive_task_folder_info(array $drive_project, array $task): array {
+        $submissions = (array) ($drive_project['submissions'] ?? []);
+        $submission = null;
+        foreach ($submissions as $candidate) {
+            if ((string) ($candidate['task_id'] ?? '') === (string) ($task['id'] ?? '')) { $submission = $candidate; break; }
+        }
+        if ($submission) {
+            $status = (string) ($submission['status'] ?? '');
+            if ($status === 'client_approved' && !empty($submission['approved_folder_id'])) {
+                return ['stage' => 'Approved', 'url' => self::vibes_drive_folder_link($submission['approved_folder_id'])];
+            }
+            if ($status === 'client_approval') {
+                return ['stage' => 'Client approval', 'url' => $submission['current_folder_url'] ?? self::vibes_drive_folder_link($submission['current_folder_id'] ?? null)];
+            }
+            if ($status === 'draft') {
+                return ['stage' => 'Sent back for changes', 'url' => $submission['current_folder_url'] ?? self::vibes_drive_folder_link($submission['current_folder_id'] ?? null)];
+            }
+            if (!empty($submission['admin_review_folder_id'])) {
+                return ['stage' => 'Admin review', 'url' => $submission['admin_review_url'] ?? self::vibes_drive_folder_link($submission['admin_review_folder_id'])];
+            }
+        }
+        // Not submitted yet: fall back to the pre-created working folder, matched by title.
+        $title = (string) ($task['title'] ?? '');
+        foreach ((array) ($drive_project['services'] ?? []) as $service) {
+            $name = (string) ($service['name'] ?? '');
+            $label = (string) ($service['label'] ?? '');
+            if ($title && (($name && stripos($title, $name) !== false) || ($label && stripos($title, $label) !== false))) {
+                return ['stage' => 'In progress', 'url' => $service['folder_url'] ?? self::vibes_drive_folder_link($service['folder_id'] ?? null)];
+            }
+        }
+        return ['stage' => '', 'url' => ''];
+    }
+
     private static function table(string $name): string {
         global $wpdb;
         return $wpdb->prefix . 'vtp_' . $name;
@@ -1532,11 +1585,14 @@ class VTP_REST {
             . '(SELECT COUNT(*) FROM ' . self::table('tasks') . " t WHERE t.project_id=p.id AND t.status IN ('review','done')) submitted_count "
             . 'FROM ' . self::table('projects') . ' p LEFT JOIN ' . $wpdb->users . ' u ON u.ID=p.lead_user_id '
             . 'LEFT JOIN ' . self::table('quotations') . ' q ON q.id=p.quotation_id ORDER BY p.updated_at DESC', ARRAY_A);
+        $drive_map = self::vibes_drive_map();
         foreach ($rows as &$row) {
             $structure = json_decode($row['drive_structure_json'] ?? '', true) ?: [];
             $row['driveStructure'] = $structure;
             $row['task_count'] = (int) ($row['task_count'] ?? 0);
             $row['submitted_count'] = (int) ($row['submitted_count'] ?? 0);
+            $drive_project = $drive_map[$row['id']] ?? null;
+            $row['vibes_drive_folder_url'] = $drive_project['project_folder_url'] ?? '';
         }
         return rest_ensure_response($rows);
     }
@@ -1579,9 +1635,14 @@ class VTP_REST {
         $where = current_user_can('vtp_manage_tasks') ? '1=1' : $wpdb->prepare('t.assignee_id=%d', get_current_user_id());
         $sql = 'SELECT t.*, p.name project_name, u.display_name assignee_name, u.user_email assignee_email, (SELECT COUNT(*) FROM ' . self::table('task_comments') . ' c WHERE c.task_id=t.id) comment_count FROM ' . self::table('tasks') . ' t LEFT JOIN ' . self::table('projects') . ' p ON p.id=t.project_id LEFT JOIN ' . $wpdb->users . " u ON u.ID=t.assignee_id WHERE {$where} ORDER BY FIELD(t.status,'in_progress','todo','review','done'), t.due_date ASC";
         $rows = $wpdb->get_results($sql, ARRAY_A);
+        $drive_map = self::vibes_drive_map();
         foreach ($rows as &$row) {
             $row['files'] = !empty($row['files_json']) ? (json_decode($row['files_json'], true) ?: []) : [];
             unset($row['files_json']);
+            $drive_project = $drive_map[$row['project_id']] ?? null;
+            $info = $drive_project ? self::drive_task_folder_info($drive_project, $row) : ['stage' => '', 'url' => ''];
+            $row['vibes_drive_folder_url'] = $info['url'];
+            $row['vibes_drive_stage'] = $info['stage'];
         }
         return rest_ensure_response($rows);
     }

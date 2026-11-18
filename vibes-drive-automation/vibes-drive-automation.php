@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Vibes Drive Automation
  * Description: Connects the Vibes Team Portal project lifecycle to a controlled Google Drive folder workflow.
- * Version: 0.4.3
+ * Version: 0.4.4
  * Author: Vibes Agency
  */
 
@@ -1247,6 +1247,22 @@ add_action('rest_api_init', static function () {
             $path = vibes_drive_mapped_local_path($folder_id);
             if (is_wp_error($path)) { return $path; }
             return ['folder_id' => $folder_id, 'mapped_path' => $path];
+        },
+    ]);
+
+    // TEMPORARY debug endpoint: trash a single folder by id, surfacing the
+    // full Drive API error data. Remove after use.
+    register_rest_route('vibes-drive/v1', '/trash-folder', [
+        'methods' => 'POST',
+        'permission_callback' => static function () { return current_user_can('manage_options'); },
+        'callback' => static function (WP_REST_Request $request) {
+            $folder_id = sanitize_text_field((string) $request->get_param('folder_id'));
+            if (!$folder_id) { return new WP_Error('missing_folder_id', 'folder_id required.'); }
+            $trash = vibes_drive_api('PATCH', 'files/' . rawurlencode($folder_id), ['trashed' => true]);
+            if (is_wp_error($trash)) {
+                return ['ok' => false, 'error' => $trash->get_error_message(), 'data' => $trash->get_error_data()];
+            }
+            return ['ok' => true, 'result' => $trash];
         },
     ]);
 

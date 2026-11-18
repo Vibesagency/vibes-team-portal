@@ -756,7 +756,8 @@
             .then(r => r.ok ? r.json() : Promise.reject(r))
             .then(status => {
               const rootUrl = status.root_folder_id ? `https://drive.google.com/drive/folders/${status.root_folder_id}` : '';
-              statusBox.innerHTML = `<div class="vtp-drive-status-row">${chip(status.connected ? 'Connected' : 'Not connected', status.connected ? 'green' : 'coral')}${chip(status.working ? 'Working' : 'Not responding', status.working ? 'green' : 'coral')}<span>${Number(status.projects_mapped || 0)} projects mapped</span></div>${rootUrl ? `<a class="vtp-btn small" href="${esc(rootUrl)}" target="_blank" rel="noopener noreferrer">Open root Drive folder ↗</a>` : ''} <a class="vtp-btn small" href="/wp-admin/options-general.php?page=vibes-drive-automation" target="_blank" rel="noopener noreferrer">Open Drive automation settings ↗</a>`;
+              const missingEmails = Number(status.employees_missing_personal_email || 0);
+              statusBox.innerHTML = `<div class="vtp-drive-status-row">${chip(status.connected ? 'Connected' : 'Not connected', status.connected ? 'green' : 'coral')}${chip(status.working ? 'Working' : 'Not responding', status.working ? 'green' : 'coral')}<span>${Number(status.projects_mapped || 0)} projects mapped</span></div>${missingEmails ? `<p class="vtp-drive-status-note">${missingEmails} team member${missingEmails === 1 ? '' : 's'} have no personal email on file, so they can't be shared into their project folders yet. Add it on each employee's profile.</p>` : ''}${rootUrl ? `<a class="vtp-btn small" href="${esc(rootUrl)}" target="_blank" rel="noopener noreferrer">Open root Drive folder ↗</a>` : ''} <a class="vtp-btn small" href="/wp-admin/options-general.php?page=vibes-drive-automation" target="_blank" rel="noopener noreferrer">Open Drive automation settings ↗</a>`;
             })
             .catch(() => { statusBox.innerHTML = empty('Drive automation status is unavailable right now.'); });
         }

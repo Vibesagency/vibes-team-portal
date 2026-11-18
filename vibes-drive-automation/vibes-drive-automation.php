@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Vibes Drive Automation
  * Description: Connects the Vibes Team Portal project lifecycle to a controlled Google Drive folder workflow.
- * Version: 0.4.1
+ * Version: 0.4.2
  * Author: Vibes Agency
  */
 
@@ -923,7 +923,11 @@ function vibes_drive_project_sync($payload) {
         $service = (array) $service;
         $name = vibes_drive_pick($service, ['name', 'service', 'title', 'label'], 'Service');
         $label = vibes_drive_pick($service, ['label', 'service_label', 'serviceLabel', 'code'], '');
-        $email = vibes_drive_pick($service, ['employee_email', 'employeeEmail', 'assignee_email', 'assigneeEmail', 'email']);
+        // Employees sign in to Drive with their own personal Google account, not
+        // their @vibesagency.co address, so sharing must use the personal email
+        // on file for the assignee rather than any vibes-email field the payload carries.
+        $assignee_id = (int) vibes_drive_pick($service, ['assignee_id', 'assigneeId', 'employee_id', 'employeeId'], 0);
+        $email = $assignee_id ? (string) get_user_meta($assignee_id, 'vtp_personal_email', true) : '';
         // A service folder that was already submitted has moved on to a later stage; never recreate an empty copy in 01 - Working.
         $submitted_sources = array_filter(array_map(static fn($sub) => (string) ($sub['source_folder_id'] ?? ''), (array) ($existing['submissions'] ?? [])));
         $already_submitted = false;
@@ -946,15 +950,24 @@ function vibes_drive_project_sync($payload) {
         if ($matched) { continue; }
         $services[] = ['name' => $name, 'label' => $label, 'folder_id' => $folder['id'], 'folder_url' => $folder['webViewLink'] ?? ('https://drive.google.com/drive/folders/' . $folder['id']), 'employee_email' => $email];
     }
-    // No per-employee Drive sharing: everyone works from the shared
-    // accounts@vibesagency.co login directly, so there is no separate
-    // employee identity to invite into a folder it already owns.
+    // Give every employee assigned to this project writer access to the whole
+    // project folder, using each employee's personal Google account (not their
+    // @vibesagency.co address). Tracked by email so a repeat sync never re-invites
+    // someone already shared in.
+    $shared_emails = (array) ($existing['project_shared_emails'] ?? []);
+    foreach ($services as $svc) {
+        $svc_email = strtolower(trim((string) ($svc['employee_email'] ?? '')));
+        if (!$svc_email || !is_email($svc_email) || in_array($svc_email, $shared_emails, true)) { continue; }
+        $share = vibes_drive_api('POST', 'files/' . rawurlencode($project_folder['id']) . '/permissions', ['type' => 'user', 'role' => 'writer', 'emailAddress' => $svc_email], ['sendNotificationEmail' => 'true']);
+        if (!is_wp_error($share)) { $shared_emails[] = $svc_email; }
+    }
     $map[$details['id']] = [
         'client_folder_id' => $client_folder['id'],
         'project_folder_id' => $project_folder['id'],
         'project_folder_url' => $project_folder['webViewLink'] ?? 'https://drive.google.com/drive/folders/' . $project_folder['id'],
         'stages' => $stages,
         'services' => $services,
+        'project_shared_emails' => $shared_emails,
         'client_name' => $client_name,
         'project_name' => $project_name,
         'raw' => $details['raw'] ?? [],
@@ -1254,6 +1267,13 @@ add_action('rest_api_init', static function () {
                 })(),
                 'root_folder_id' => $s['root_folder_id'],
                 'projects_mapped' => count(vibes_drive_map()),
+                'employees_missing_personal_email' => (static function () {
+                    $missing = 0;
+                    foreach (get_users(['fields' => ['ID']]) as $u) {
+                        if (!get_user_meta($u->ID, 'vtp_personal_email', true)) { $missing++; }
+                    }
+                    return $missing;
+                })(),
             ];
         },
     ]);

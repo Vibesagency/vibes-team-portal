@@ -670,3 +670,4 @@ body:has(.vpm-connect-page) .vpm-compose{grid-template-columns:minmax(0,1fr) 34p
 .vtp-task-drive-folder small:first-child{font-weight:700;color:#5B2A9A;font-size:12px}
 .vtp-drive-status-row{display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin-bottom:10px}
 .vtp-drive-status-row span{font-size:13px;color:#5D5670}
+.vtp-drive-status-note{font-size:13px;color:#A4572C;background:#FDF2E9;border:1px solid #F3D9C0;border-radius:8px;padding:8px 10px;margin:0 0 10px}

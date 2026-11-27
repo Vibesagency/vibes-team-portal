@@ -156,6 +156,14 @@ body.login .language-switcher{display:none}
                 'logo' => VTP_URL . 'assets/images/vibes-logo-cropped.png',
                 'quoteBackground' => VTP_URL . 'assets/images/quotation-six-month-background.png',
             ]);
+            if (current_user_can('vtp_use_office')) {
+                wp_enqueue_script('vtp-office', VTP_URL . 'assets/js/office.js', ['vtp-app'], VTP_VERSION, true);
+                wp_localize_script('vtp-office', 'VTP_OFFICE', [
+                    'root' => esc_url_raw(rest_url('vibes/v1/')),
+                    'nonce' => wp_create_nonce('wp_rest'),
+                    'canManage' => current_user_can('vtp_manage_office'),
+                ]);
+            }
         }
     }
 
@@ -212,6 +220,7 @@ body.login .language-switcher{display:none}
             'directory' => '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="5" rx="1"/><rect x="2" y="16" width="6" height="5" rx="1"/><rect x="16" y="16" width="6" height="5" rx="1"/><path d="M12 8v4M5 16v-4h14v4"/></svg>',
             'settings' => '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-2.83 2.83-.06-.06A1.7 1.7 0 0 0 15 19.4a1.7 1.7 0 0 0-1 .6 1.7 1.7 0 0 0-.4 1.1V21H9.6v-.09A1.7 1.7 0 0 0 8 19.4a1.7 1.7 0 0 0-1.88.34l-.06.06-2.83-2.83.06-.06A1.7 1.7 0 0 0 3.6 15a1.7 1.7 0 0 0-1.6-1H2v-4h.09A1.7 1.7 0 0 0 3.6 8a1.7 1.7 0 0 0-.34-1.88l-.06-.06 2.83-2.83.06.06A1.7 1.7 0 0 0 8 3.6 1.7 1.7 0 0 0 9 2h4a1.7 1.7 0 0 0 2 1.6 1.7 1.7 0 0 0 1.88-.34l.06-.06 2.83 2.83-.06.06A1.7 1.7 0 0 0 19.4 8a1.7 1.7 0 0 0 1.6 1h.09v4H21a1.7 1.7 0 0 0-1.6 2z"/></svg>',
             'bell' => '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 8a6 6 0 1 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9ZM10 21h4"/></svg>',
+            'office' => '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="7" width="18" height="13" rx="2"/><path d="M8 7V5a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M8 13h2M14 13h2M8 17h8"/></svg>',
         ];
         return $icons[$name] ?? '';
     }
@@ -245,6 +254,7 @@ body.login .language-switcher{display:none}
                         <a href="#directory" data-route="directory"><i><?php echo self::nav_icon('directory'); ?></i><span>Organization Chart</span></a>
                         <a href="#leave" data-route="leave"><i><?php echo self::nav_icon('leave'); ?></i><span>Leave Management</span></a>
                         <a href="#announcements" data-route="announcements"><i><?php echo self::nav_icon('announcements'); ?></i><span>Announcements</span></a>
+                        <?php if (current_user_can('vtp_use_office')): ?><a href="#office" data-route="office"><i><?php echo self::nav_icon('office'); ?></i><span>Office</span></a><?php endif; ?>
                     </div>
                     <div class="vtp-nav-group" data-nav-group="website">
                         <span class="vtp-nav-section-label">Website Management</span>

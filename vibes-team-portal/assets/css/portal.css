@@ -671,3 +671,22 @@ body:has(.vpm-connect-page) .vpm-compose{grid-template-columns:minmax(0,1fr) 34p
 .vtp-drive-status-row{display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin-bottom:10px}
 .vtp-drive-status-row span{font-size:13px;color:#5D5670}
 .vtp-drive-status-note{font-size:13px;color:#A4572C;background:#FDF2E9;border:1px solid #F3D9C0;border-radius:8px;padding:8px 10px;margin:0 0 10px}
+
+/* ---- Vibes Office ---- */
+.vof-table{width:100%;border-collapse:collapse;margin-top:10px}
+.vof-table th{text-align:left;font-size:12px;color:#5D5670;font-weight:700;padding:8px 10px;border-bottom:1px solid #E7E2EE}
+.vof-table td{padding:10px;border-bottom:1px solid #F1EEF7;font-size:14px;vertical-align:middle}
+.vof-muted{color:#A4A0B5;font-size:13px}
+.vof-person{display:flex;align-items:center;gap:8px}
+.vof-person img{width:28px;height:28px;border-radius:50%;object-fit:cover}
+.vof-badge{display:inline-block;padding:3px 10px;border-radius:999px;font-size:12px;font-weight:600}
+.vof-badge.on{background:#E7F7EE;color:#1F8A4C}
+.vof-badge.off{background:#F1EEF7;color:#8A8498}
+.vof-thumb{width:48px;height:48px;object-fit:cover;border-radius:8px;border:1px solid #E7E2EE}
+.vof-inline-form{display:flex;gap:8px;margin-top:12px}
+.vof-inline-form input{flex:1}
+.vof-online-grid{display:flex;flex-wrap:wrap;gap:12px;margin-top:10px}
+.vof-online-chip{display:flex;align-items:center;gap:8px;background:#F7F5FA;border:1px solid #E7E2EE;border-radius:999px;padding:6px 14px 6px 6px}
+.vof-online-chip img{width:28px;height:28px;border-radius:50%;object-fit:cover}
+.vof-online-chip small{display:block;color:#8A8498;font-size:11px}
+.vtp-btn.danger{color:#C0392B;border-color:#F3D0CC}

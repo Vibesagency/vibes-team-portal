@@ -1510,6 +1510,10 @@ class VTP_REST {
         update_user_meta($id, 'vtp_salary_amount', $role === 'vibes_manager' ? '' : $salary_amount);
         update_user_meta($id, 'vtp_salary_currency', $salary_currency);
         update_user_meta($id, 'vtp_employment_status', $role === 'vibes_manager' ? 'permanent' : $employment_status);
+        // Vibes Office access is off by default for every newly created account —
+        // an admin has to explicitly turn it on from the Office page before this
+        // person can sign into the desktop app.
+        update_user_meta($id, 'vtp_office_enabled', '0');
         $user = get_user_by('id', $id);
         return new WP_REST_Response(['employee' => self::user_payload($user), 'temporaryPassword' => $password], 201);
     }

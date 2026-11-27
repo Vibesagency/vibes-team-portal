@@ -37,7 +37,32 @@
 
   let rooms = [];
   let analytics = null;
-  let roomsError = '', analyticsError = '';
+  let employees = [];
+  let roomsError = '', analyticsError = '', employeesError = '';
+
+  function employeeAccessPanel() {
+    if (!VTP_OFFICE.canManage) return '';
+    const rows = employees.map((e) => `
+      <tr data-user-id="${e.userId}">
+        <td class="vof-person"><img src="${esc(e.avatarUrl)}" alt=""><span>${esc(e.name)}</span></td>
+        <td class="vof-muted">${esc(e.email)}</td>
+        <td>
+          <label class="vof-switch">
+            <input type="checkbox" data-office-access-toggle ${e.officeEnabled ? 'checked' : ''}>
+            <span>${e.officeEnabled ? 'Can sign in' : 'Blocked'}</span>
+          </label>
+        </td>
+      </tr>`).join('');
+    return `
+      <article class="vtp-card vof-employees">
+        <div class="vtp-card-head"><div><h2>Who can use Vibes Office</h2><p>Only Vibes employee/manager accounts can ever sign into the desktop app, and only the ones you switch on here. New employees start blocked until you turn them on.</p></div></div>
+        ${employeesError ? `<div class="vtp-alert error">${esc(employeesError)}</div>` : ''}
+        <table class="vof-table">
+          <thead><tr><th>Employee</th><th>Email</th><th>Desktop app access</th></tr></thead>
+          <tbody>${rows || '<tr><td colspan="3" class="vof-muted">No eligible employees yet.</td></tr>'}</tbody>
+        </table>
+      </article>`;
+  }
 
   function roomsAdminPanel() {
     if (!VTP_OFFICE.canManage) return '';
@@ -111,6 +136,7 @@
   function view() {
     return `<section class="vtp-page vof-page">
       ${typeof pageHead === 'function' ? pageHead('Office', 'Your always-on virtual office.') : '<div class="vtp-page-head"><h1>Office</h1></div>'}
+      ${employeeAccessPanel()}
       ${roomsAdminPanel()}
       ${analyticsPanel()}
       ${onlineNowPanel()}
@@ -120,6 +146,11 @@
   async function loadRooms() {
     try { rooms = await api('office/rooms'); roomsError = ''; }
     catch (e) { roomsError = e.message; }
+  }
+  async function loadEmployees() {
+    if (!VTP_OFFICE.canManage) return;
+    try { employees = await api('office/employees'); employeesError = ''; }
+    catch (e) { employeesError = e.message; }
   }
   async function loadAnalytics(date) {
     try {
@@ -138,7 +169,7 @@
     if (!el || route() !== ROUTE) return;
     const t = ++token;
     if (!el.querySelector('.vof-page')) el.innerHTML = '<section class="vtp-page vof-page"><div class="vcl-load">Loading your office…</div></section>';
-    await Promise.all([loadRooms(), loadAnalytics()]);
+    await Promise.all([loadRooms(), loadAnalytics(), loadEmployees()]);
     if (t !== token || route() !== ROUTE) return;
     el.innerHTML = view();
   }
@@ -177,10 +208,29 @@
   });
 
   document.addEventListener('change', async (e) => {
-    if (e.target.id !== 'vof-date') return;
-    await loadAnalytics(e.target.value);
-    const el = document.getElementById('vtp-view');
-    if (el && route() === ROUTE) el.innerHTML = view();
+    if (e.target.id === 'vof-date') {
+      await loadAnalytics(e.target.value);
+      const el = document.getElementById('vtp-view');
+      if (el && route() === ROUTE) el.innerHTML = view();
+      return;
+    }
+    const toggle = e.target.closest('[data-office-access-toggle]');
+    if (toggle) {
+      const row = toggle.closest('tr');
+      const id = row.dataset.userId;
+      const enabled = toggle.checked;
+      toggle.disabled = true;
+      try {
+        await api(`office/employees/${id}`, {method: 'PATCH', body: JSON.stringify({enabled})});
+        await loadEmployees();
+      } catch (err) {
+        employeesError = err.message;
+        toggle.checked = !enabled; // revert on failure
+      } finally {
+        const el = document.getElementById('vtp-view');
+        if (el && route() === ROUTE) el.innerHTML = view();
+      }
+    }
   });
 
   const kick = () => { if (route() === ROUTE) render(); };

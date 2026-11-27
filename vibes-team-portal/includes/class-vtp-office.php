@@ -58,12 +58,22 @@ class VTP_Office {
         }
     }
 
+    /** Per-account access toggle, on top of the role capability. Unset meta
+     *  = enabled (so existing employees keep working as they do today);
+     *  only an explicit '0' turns a specific account off. New employees
+     *  are created with this explicitly set to '0' (see class-vtp-rest.php),
+     *  so going forward an admin has to turn each new account ON. */
+    private static function office_access_enabled(int $user_id): bool {
+        $meta = get_user_meta($user_id, 'vtp_office_enabled', true);
+        return $meta !== '0';
+    }
+
     private static function office_users_can(int $user_id): bool {
-        return user_can($user_id, 'vtp_use_office');
+        return user_can($user_id, 'vtp_use_office') && self::office_access_enabled($user_id);
     }
 
     public static function logged_in_office(): bool {
-        return is_user_logged_in() && current_user_can('vtp_use_office');
+        return is_user_logged_in() && self::office_users_can(get_current_user_id());
     }
 
     public static function manage_office(): bool {
@@ -142,6 +152,12 @@ class VTP_Office {
         ]);
         register_rest_route(self::NS, '/office/online', [
             'methods' => 'GET', 'callback' => [self::class, 'online_now'], 'permission_callback' => [self::class, 'require_any_office_auth'],
+        ]);
+        register_rest_route(self::NS, '/office/employees', [
+            'methods' => 'GET', 'callback' => [self::class, 'employees_list'], 'permission_callback' => [self::class, 'manage_office'],
+        ]);
+        register_rest_route(self::NS, '/office/employees/(?P<id>\d+)', [
+            'methods' => 'PATCH', 'callback' => [self::class, 'employees_update'], 'permission_callback' => [self::class, 'manage_office'],
         ]);
         register_rest_route(self::NS, '/office/snapshots/(?P<id>\d+)', [
             'methods' => 'GET', 'callback' => [self::class, 'snapshot_serve'], 'permission_callback' => [self::class, 'manage_office'],
@@ -266,6 +282,47 @@ class VTP_Office {
         $wpdb->update(self::table('office_rooms'), ['is_active' => 0], ['id' => $id]);
         self::audit('room_deleted', 'room', $id);
         return rest_ensure_response(['deleted' => true]);
+    }
+
+    // ----------------------------- employee access -----------------------------
+    // Vibes Office is only ever available to Vibes accounts (Employee/Manager/
+    // Administrator roles carry the vtp_use_office capability). On top of that,
+    // each individual account needs the admin's explicit go-ahead before it can
+    // actually sign into the desktop app — this is that on/off list.
+
+    public static function employees_list() {
+        $users = get_users(['role__in' => ['administrator', 'vibes_manager', 'vibes_employee'], 'orderby' => 'display_name']);
+        $out = [];
+        foreach ($users as $user) {
+            $uid = (int) $user->ID;
+            if (!user_can($uid, 'vtp_use_office')) continue; // not an Office-eligible role at all
+            $out[] = [
+                'userId' => $uid,
+                'name' => $user->display_name,
+                'email' => $user->user_email,
+                'avatarUrl' => method_exists('VTP_REST', 'avatar_url') ? VTP_REST::avatar_url($uid) : get_avatar_url($uid),
+                'officeEnabled' => self::office_access_enabled($uid),
+            ];
+        }
+        return rest_ensure_response($out);
+    }
+
+    public static function employees_update(WP_REST_Request $request) {
+        $id = (int) $request['id'];
+        $user = get_user_by('id', $id);
+        if (!$user || !user_can($id, 'vtp_use_office')) return self::error('not_found', 'Employee not found.', 404);
+        $body = self::body($request);
+        if (!array_key_exists('enabled', $body)) return self::error('missing_enabled', 'Say whether to enable or disable access.', 400);
+        $enabled = !empty($body['enabled']) && $body['enabled'] !== 'false';
+        update_user_meta($id, 'vtp_office_enabled', $enabled ? '1' : '0');
+        if (!$enabled) {
+            // Revoking access also ends anything currently open for them.
+            global $wpdb;
+            $wpdb->update(self::table('office_tokens'), ['revoked_at' => current_time('mysql')], ['user_id' => $id]);
+            self::end_open_sessions($id, 'access_revoked');
+        }
+        self::audit($enabled ? 'office_access_granted' : 'office_access_revoked', 'user', $id);
+        return rest_ensure_response(['userId' => $id, 'officeEnabled' => $enabled]);
     }
 
     // ----------------------------- presence -----------------------------

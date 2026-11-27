@@ -33,6 +33,7 @@ class VTP_Activator {
             'vtp_use_portal' => true,
             'vtp_update_own_tasks' => true,
             'vtp_request_leave' => true,
+            'vtp_use_office' => true,
         ];
         add_role('vibes_employee', 'Vibes Employee', $employee);
         add_role('vibes_manager', 'Vibes Manager', array_merge($employee, [
@@ -68,7 +69,7 @@ class VTP_Activator {
             foreach ([
                 'vtp_use_portal', 'vtp_manage_employees', 'vtp_manage_tasks',
                 'vtp_manage_projects', 'vtp_manage_sales', 'vtp_manage_leave', 'vtp_review_creative',
-                'vtp_manage_announcements',
+                'vtp_manage_announcements', 'vtp_use_office', 'vtp_manage_office',
             ] as $cap) {
                 $admin->add_cap($cap);
             }
@@ -291,6 +292,49 @@ class VTP_Activator {
                 created_at datetime NOT NULL,
                 updated_at datetime NOT NULL,
                 PRIMARY KEY (id), UNIQUE KEY invoice_number (invoice_number), KEY quotation_id (quotation_id), KEY project_id (project_id), KEY status (status)
+            ) {$charset};",
+            // ---- Vibes Office (always-on virtual office) ----
+            "CREATE TABLE {$prefix}office_rooms (
+                id bigint unsigned NOT NULL AUTO_INCREMENT,
+                slug varchar(60) NOT NULL,
+                label varchar(120) NOT NULL,
+                jitsi_room varchar(190) NOT NULL,
+                sort_order int NOT NULL DEFAULT 0,
+                is_active tinyint(1) NOT NULL DEFAULT 1,
+                created_by bigint unsigned NOT NULL,
+                created_at datetime NOT NULL,
+                PRIMARY KEY (id), UNIQUE KEY slug (slug)
+            ) {$charset};",
+            "CREATE TABLE {$prefix}office_tokens (
+                id bigint unsigned NOT NULL AUTO_INCREMENT,
+                token varchar(64) NOT NULL,
+                user_id bigint unsigned NOT NULL,
+                device_label varchar(190) DEFAULT '',
+                created_at datetime NOT NULL,
+                last_used_at datetime DEFAULT NULL,
+                expires_at datetime NOT NULL,
+                revoked_at datetime DEFAULT NULL,
+                PRIMARY KEY (id), UNIQUE KEY token (token), KEY user_id (user_id)
+            ) {$charset};",
+            "CREATE TABLE {$prefix}office_sessions (
+                id bigint unsigned NOT NULL AUTO_INCREMENT,
+                user_id bigint unsigned NOT NULL,
+                room_id bigint unsigned DEFAULT NULL,
+                status varchar(20) NOT NULL DEFAULT 'online',
+                started_at datetime NOT NULL,
+                last_ping_at datetime NOT NULL,
+                ended_at datetime DEFAULT NULL,
+                ended_reason varchar(40) DEFAULT '',
+                PRIMARY KEY (id), KEY user_id (user_id), KEY room_id (room_id), KEY ended_at (ended_at)
+            ) {$charset};",
+            "CREATE TABLE {$prefix}office_snapshots (
+                id bigint unsigned NOT NULL AUTO_INCREMENT,
+                session_id bigint unsigned NOT NULL,
+                user_id bigint unsigned NOT NULL,
+                face_detected tinyint(1) NOT NULL DEFAULT 0,
+                file_path varchar(255) NOT NULL,
+                captured_at datetime NOT NULL,
+                PRIMARY KEY (id), KEY session_id (session_id), KEY user_id (user_id), KEY captured_at (captured_at)
             ) {$charset};",
         ];
 
